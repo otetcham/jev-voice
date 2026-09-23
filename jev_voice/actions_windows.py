@@ -156,9 +156,12 @@ SITES: dict[str, str] = {
     "notion": "https://www.notion.so",
     "spotify_web": "https://open.spotify.com",
     "wikipedia": "https://ja.wikipedia.org",
-    "yahoo": "https://www.yahoo.co.jp",
+    "yahoo": "https://search.yahoo.co.jp",
     "qiita": "https://qiita.com",
     "zenn": "https://zenn.dev",
+    "trip_com": "https://jp.trip.com/flights/",
+    "google_flights": "https://www.google.com/travel/flights",
+    "expedia": "https://www.expedia.co.jp",
 }
 
 SEARCH_ENGINES: dict[str, str] = {

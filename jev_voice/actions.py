@@ -167,6 +167,9 @@ SITES: dict[str, str] = {
     "twitch": "https://www.twitch.tv",
     "figma": "https://www.figma.com",
     "typesafe_console": "https://console.typesafe.ai",
+    "trip_com": "https://jp.trip.com/flights/",
+    "google_flights": "https://www.google.com/travel/flights",
+    "expedia": "https://www.expedia.co.jp",
 }
 
 SEARCH_ENGINES: dict[str, str] = {

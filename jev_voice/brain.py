@@ -25,7 +25,7 @@ else:
 ACTIONS: dict[str, str] = {
     "open_app": "Launch, open, switch to, or bring up an application program on the Mac (for example Chrome, Cursor, Slack, Finder, Terminal, Notes)",
     "open_website": "Go to a website or web page by name or domain, with no search query (for example 'go to youtube', 'open reddit', 'pull up gmail')",
-    "web_search": "Search for something on the web or on a specific site: Google it, look it up, find videos of, search YouTube for, search Amazon for",
+    "web_search": "Search for something on a simple general search engine (Google, Yahoo) or content site (YouTube, Wikipedia). NOT for multi-step tasks, booking, flights, travel routes, hotels, or forms on specific services like Trip.com or Expedia (those are task)",
     "type_text": "Type, write, dictate, or enter some text into whatever is currently focused",
     "new_item": "Create something new inside an app: a new note, document, file, tab, window, message, email, or page (for example 'new note', 'open a new note in the notes app', 'make a new note called groceries', 'new document')",
     "shortcut": "Press a single key or keyboard shortcut: enter, escape, tab, copy, paste, undo, save, select all, new tab, close tab, reload, go back, quit the app, switch app, and similar",
@@ -35,7 +35,7 @@ ACTIONS: dict[str, str] = {
     "screenshot": "Take a screenshot of the screen",
     "open_folder": "Open a folder like Downloads, Desktop, Documents, or the home folder in Finder",
     "system": "System-level action: lock the screen, put the display to sleep, show the desktop, toggle dark mode, empty the trash",
-    "task": "A multi-step task that needs looking at the screen and doing several things inside an app or website: fill in a form, find and click something specific, reply to a message, search a site and open a result, change a setting, compose and send an email (for example 'reply to the last email from Sam saying yes', 'find the cheapest flight to London on google flights', 'turn on dark mode in the settings app')",
+    "task": "A multi-step task or site interaction: look up flights, hotels, routes, or tickets on travel sites (Trip.com, Google Flights, Expedia), fill in a form, find and click something specific, reply to a message, buy something, or change settings (for example 'トリップ.comで東京から台湾までのルートを検索', 'find the cheapest flight to London on google flights', 'reply to the last email from Sam saying yes')",
     "stop": "Tell the assistant to stop listening, go to sleep, or exit",
     "none": "Not a command for the computer: conversation, thinking aloud, background chatter, or unintelligible",
 }
@@ -147,7 +147,21 @@ _SITE_WORD = re.compile(
 )
 
 
+_JP_SITE_KEYWORDS = {
+    "トリップ.com": "trip_com",
+    "トリップドットコム": "trip_com",
+    "トリップ": "trip_com",
+    "trip.com": "trip_com",
+    "tripcom": "trip_com",
+    "グーグルフライト": "google_flights",
+    "エクスペディア": "expedia",
+}
+
+
 def domain_guess(utterance: str) -> str | None:
+    for k, v in _JP_SITE_KEYWORDS.items():
+        if k in utterance.lower():
+            return actions.SITES.get(v, "https://jp.trip.com/flights/").replace("https://", "").rstrip("/")
     m = _DOMAIN.search(utterance)
     if m:
         return m.group(1).lower()
@@ -232,7 +246,7 @@ class Brain:
             },
             "site": {
                 "type": "choice",
-                "instructions": "Assume the user wants to open a website. Which site do they mean? Choose `other` if it is not one of the listed sites.",
+                "instructions": "Assume the user wants to open, search on, or interact with a website or service (for example 'trip_com' for Trip.com/トリップ.com, 'google_flights', 'youtube', 'amazon'). Which site do they mean? Choose `other` if it is not one of the listed sites.",
                 "criteria": {**{s: None for s in actions.SITES}, "other": "A site not in this list"},
             },
             "engine": {
@@ -352,9 +366,45 @@ class Brain:
         if action == "web_search":
             engine, c1 = ch("engine")
             tkey, c2 = ch("text")
-            args["engine"] = engine
-            args["query"] = cands.get(tkey, utterance)
-            conf = min(conf, c2)
+            q_text = cands.get(tkey, utterance)
+            lower_utt = utterance.lower()
+
+            # Guardrail: If utterance asks for travel booking/flights/routes or specific non-search-engine sites (Trip.com, etc.), promote to 'task'
+            is_travel_task = any(k in lower_utt for k in ("trip", "トリップ", "フライト", "航空券", "expedia", "エクスペディア")) and any(k in lower_utt for k in ("ルート", "検索", "探して", "予約", "行き方", "飛行機", "便"))
+            if is_travel_task or (engine == "google" and ("trip" in lower_utt or "トリップ" in lower_utt)):
+                action = "task"
+                site, _ = ch("site")
+                if site != "other" and site in actions.SITES:
+                    args["site"] = site
+                    args["url"] = actions.SITES[site]
+                else:
+                    args["site"] = "trip_com"
+                    args["url"] = actions.SITES.get("trip_com", "https://jp.trip.com/flights/")
+                args["goal"] = utterance
+                conf = max(conf, 0.85)
+            else:
+                args["engine"] = engine
+                args["query"] = q_text
+                conf = min(conf, c2)
+        elif action == "task":
+            site, _ = ch("site")
+            if site != "other" and site in actions.SITES:
+                args["site"] = site
+                args["url"] = actions.SITES[site]
+            else:
+                dom = domain_guess(utterance)
+                if dom and dom in actions.SITES:
+                    args["site"] = dom
+                    args["url"] = actions.SITES[dom]
+                elif dom:
+                    args["site"] = dom
+                    args["url"] = f"https://{dom}"
+                elif any(k in utterance.lower() for k in ("trip", "トリップ")):
+                    args["site"] = "trip_com"
+                    args["url"] = actions.SITES.get("trip_com", "https://jp.trip.com/flights/")
+                else:
+                    args["url"] = None
+            args["goal"] = utterance
         elif action == "type_text":
             tkey, c = ch("text")
             args["text"] = cands.get(tkey, utterance)

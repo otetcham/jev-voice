@@ -91,6 +91,52 @@ def run_task(goal: str, speaker: Speaker | None = None, start_url: str | None = 
         print(f"  ▶ {line}")
         OVERLAY.set("thinking", f"{step['step']}. {line}")
 
+    if sys.platform == "win32":
+        neo_runner = Path(r"C:\Users\yotsu\scripts\jev_neo_runner.mjs")
+        if neo_runner.exists():
+            effective_url = start_url
+            if not effective_url:
+                if any(k in goal.lower() for k in ("trip", "トリップ", "flight", "フライト", "航空券", "ルート")):
+                    effective_url = "https://jp.trip.com/flights/"
+                else:
+                    effective_url = "https://www.google.com"
+
+            print(f"  ▶ [Windows Jev-Neo] Driving BrowserOS neo via {neo_runner.name}...")
+            print(f"    Goal: {goal}")
+            print(f"    URL: {effective_url}")
+            OVERLAY.set("thinking", f"Jev-Neo: {goal[:25]}...")
+
+            try:
+                proc = subprocess.Popen(
+                    ["node", str(neo_runner), goal, effective_url],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                for line in proc.stdout:
+                    line_s = line.strip()
+                    if line_s:
+                        print(f"  [neo] {line_s}")
+                        if any(k in line_s for k in ("Step", "Jev chose", "Filling", "Clicking", "Goal reached", "Opening")):
+                            OVERLAY.set("thinking", line_s[:40])
+                proc.wait()
+                if proc.returncode == 0:
+                    OVERLAY.set("done", "ブラウザ操作が完了しました", revert_after=5.0)
+                    return "ブラウザ操作が完了しました。"
+                print("  ! Jev-Neo runner exited with error, falling back to Antigravity CLI...")
+            except Exception as ex:
+                print(f"  ! Jev-Neo launch error: {ex}, falling back to Antigravity CLI...")
+
+        # Fallback to Antigravity CLI
+        print("  ▶ [Windows Fallback] Dispatching task to Antigravity CLI...")
+        OVERLAY.set("thinking", "Antigravity CLIで実行中...")
+        from .antigravity_runner import run_antigravity
+        run_antigravity(f"ブラウザで次の操作を実行してください: {goal} (URL: {start_url or '適切に選択'})")
+        OVERLAY.set("done", "完了しました", revert_after=5.0)
+        return "完了しました。"
+
     try:
         if TASK_DRIVER == "browser":
             from .web import WebAgent
@@ -149,7 +195,8 @@ def execute(plan: Plan, dry: bool = False, speaker: Speaker | None = None) -> st
         return f"[dry] {plan}"
     if act == "task":
         site = plan.answers.get("site", {}).get("choice") if plan.answers else None
-        return run_task(plan.utterance, speaker, start_url=actions.SITES.get(site) if site else None,
+        target_url = a.get("url") or (actions.SITES.get(site) if site else None)
+        return run_task(plan.utterance, speaker, start_url=target_url,
                         recommend=bool(a.get("recommend")) or bool(a.get("message_seller")),
                         message=SELLER_MESSAGE if a.get("message_seller") else None)
     if a.get("in_app"):
