@@ -305,11 +305,14 @@ class Session:
         if len(pcm) < config.SAMPLE_RATE * 0.25:
             return True
         t0 = time.perf_counter()
+        OVERLAY.set("thinking", "⏳ 音声を読み込み中…")
         text = self.stt.transcribe(pcm)
         stt_ms = int((time.perf_counter() - t0) * 1000)
         if not text:
             print("  (heard nothing)")
+            OVERLAY.set("idle", "聞き取れませんでした", revert_after=1.5)
             return True
+        OVERLAY.set("thinking", f"⚡ {text}")
         print(f"🗣  {text}   ({len(pcm)/config.SAMPLE_RATE:.1f}s audio, stt {stt_ms}ms)")
         self.listener.pause(0.3)
         ok = handle(self.brain, self.speaker, text, self.args.dry_run)
@@ -557,11 +560,13 @@ def run_ptt(s: Session) -> None:
             state["latched"] = False
             recording.clear()
             ding(SOUND_STOP)
+            OVERLAY.set("thinking", "⏳ 音声を読み込み中…")
             print("  ⏹ 録音終了 → 解析実行中...")
             return
         s.speaker.interrupt()
         ding(SOUND_START)
         recording.set()
+        OVERLAY.set("listening", "🎙️ 音声を聞き取り中…")
         print("  🎙️ 録音中… 話しかけてください")
 
     def on_release() -> None:
@@ -573,6 +578,7 @@ def run_ptt(s: Session) -> None:
             return
         recording.clear()
         ding(SOUND_STOP)
+        OVERLAY.set("thinking", "⏳ 音声を読み込み中…")
         print("  ⏹ 録音終了 → 解析実行中...")
 
     # Start global hotkey listener
@@ -590,12 +596,14 @@ def run_ptt(s: Session) -> None:
                 state["latched"] = False
                 recording.clear()
                 ding(SOUND_STOP)
+                OVERLAY.set("thinking", "⏳ 音声を読み込み中…")
                 print("  ⏹ 録音終了 → 解析実行中...")
             else:
                 state["latched"] = True
                 s.speaker.interrupt()
                 ding(SOUND_START)
                 recording.set()
+                OVERLAY.set("listening", "🎙️ 音声を聞き取り中…")
                 print("  🎙️ 録音中… 話しかけてください")
 
     threading.Thread(target=terminal_listener, daemon=True).start()

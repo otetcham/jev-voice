@@ -8,26 +8,31 @@ States: idle · listening · heard · thinking · done · error
 """
 from __future__ import annotations
 
+import sys
 import threading
 import warnings
 from typing import Callable
 
-try:
-    import objc  # type: ignore
+if sys.platform == "win32":
+    from . import overlay_windows as _win
+    sys.modules[__name__] = _win
+else:
+    try:
+        import objc  # type: ignore
 
-    warnings.filterwarnings("ignore", category=objc.ObjCPointerWarning)
+        warnings.filterwarnings("ignore", category=objc.ObjCPointerWarning)
 
-    from AppKit import (  # type: ignore
-        NSApplication, NSApplicationActivationPolicyAccessory, NSBackingStoreBuffered, NSColor, NSFont,
-        NSMakeRect, NSPanel, NSScreen, NSTextField, NSView, NSWindowCollectionBehaviorCanJoinAllSpaces,
-        NSWindowCollectionBehaviorStationary, NSWindowStyleMaskBorderless, NSWindowStyleMaskNonactivatingPanel,
-        NSStatusWindowLevel,
-    )
-    from Foundation import NSObject  # type: ignore
-    from PyObjCTools import AppHelper  # type: ignore
-    _HAS_OBJC = True
-except (ImportError, ModuleNotFoundError):
-    _HAS_OBJC = False
+        from AppKit import (  # type: ignore
+            NSApplication, NSApplicationActivationPolicyAccessory, NSBackingStoreBuffered, NSColor, NSFont,
+            NSMakeRect, NSPanel, NSScreen, NSTextField, NSView, NSWindowCollectionBehaviorCanJoinAllSpaces,
+            NSWindowCollectionBehaviorStationary, NSWindowStyleMaskBorderless, NSWindowStyleMaskNonactivatingPanel,
+            NSStatusWindowLevel,
+        )
+        from Foundation import NSObject  # type: ignore
+        from PyObjCTools import AppHelper  # type: ignore
+        _HAS_OBJC = True
+    except (ImportError, ModuleNotFoundError):
+        _HAS_OBJC = False
 
 COLORS = {
     "idle": (0.55, 0.55, 0.58),
@@ -148,5 +153,5 @@ class NullOverlay:
         worker()
 
 
-if not _HAS_OBJC:
+if sys.platform != "win32" and not _HAS_OBJC:
     Overlay = NullOverlay  # type: ignore
