@@ -8,8 +8,13 @@ Needs Accessibility (or Input Monitoring) permission for the terminal app.
 from __future__ import annotations
 
 import subprocess
+import sys
 import threading
 from typing import Callable
+
+if sys.platform == "win32":
+    from . import hotkey_windows as _win
+    sys.modules[__name__] = _win
 
 CAPS_SRC = 0x700000039   # HID usage: Caps Lock
 F18_DST = 0x70000006D    # HID usage: F18

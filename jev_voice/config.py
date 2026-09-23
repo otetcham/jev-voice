@@ -40,10 +40,14 @@ else:
 TYPESAFE_URL = API_URL
 
 WHISPER_LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "ja")
-_default_whisper = ROOT / "models" / "ggml-base.bin" if (ROOT / "models" / "ggml-base.bin").exists() else ROOT / "models" / "ggml-base.en.bin"
+_default_whisper = (
+    ROOT / "models" / "ggml-tiny.bin" if (ROOT / "models" / "ggml-tiny.bin").exists()
+    else ROOT / "models" / "ggml-base.bin" if (ROOT / "models" / "ggml-base.bin").exists()
+    else ROOT / "models" / "ggml-base.en.bin"
+)
 WHISPER_MODEL = Path(os.environ.get("WHISPER_MODEL", _default_whisper))
 WHISPER_PORT = int(os.environ.get("WHISPER_PORT", "8178"))
-WHISPER_THREADS = int(os.environ.get("WHISPER_THREADS", "6"))
+WHISPER_THREADS = int(os.environ.get("WHISPER_THREADS", str(min(8, os.cpu_count() or 6))))
 
 SAMPLE_RATE = 16000
 TTS_VOICE = os.environ.get("TTS_VOICE", "Samantha")

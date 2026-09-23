@@ -49,11 +49,18 @@ def ding(path: str) -> None:
     if sys.platform == "darwin":
         subprocess.Popen(["afplay", "-v", "0.4", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     elif sys.platform == "win32":
-        try:
-            import winsound
-            winsound.MessageBeep(winsound.MB_OK)
-        except Exception:
-            pass
+        def _beep():
+            try:
+                import winsound
+                if path == SOUND_START:
+                    winsound.Beep(1400, 70)
+                elif path == SOUND_STOP:
+                    winsound.Beep(900, 70)
+                else:
+                    winsound.MessageBeep(winsound.MB_OK)
+            except Exception:
+                pass
+        threading.Thread(target=_beep, daemon=True).start()
 
 
 _DESKTOP = None
@@ -518,37 +525,87 @@ def run_always_on(s: Session) -> None:
 
 
 def run_ptt(s: Session) -> None:
-    print("⏎  [Push-to-Talk / プッシュ・トゥ・トーク] Enterキーを押して話し、話し終わったらもう一度Enterを押してください。 (終了: Ctrl+C)")
-    while True:
-        try:
-            input("  👉 [Enter] で録音開始… ")
-        except (KeyboardInterrupt, EOFError):
-            print("\n終了します。")
-            break
-        s.listener.drain()
-        print("  🎙️ 録音中… 話し終わったら [Enter] を押してください")
-        parts: list[np.ndarray] = []
-        stop = threading.Event()
+    from .hotkey import CapsLockListener
+    key_name = "Alt + Space" if sys.platform == "win32" else "Caps Lock"
+    print(f"\n🎙️  【グローバルPTT起動中】 どの画面にいても [{key_name}] を押すだけで音声操作できます！")
+    print(f"   ・短押し: 録音開始 ／ もう一度押して実行（トグル）")
+    print(f"   ・長押し: 押している間録音、離して実行（ホールド）")
+    print(f"   ・このターミナルで [Enter] を押しても開始／停止できます (終了: Ctrl+C)")
+    print(f"   (Jev: {s.brain.model}, Whisper: {config.WHISPER_MODEL.name})\n")
 
-        def _collect() -> None:
-            while not stop.is_set():
+    recording = threading.Event()
+    done: queue.Queue[np.ndarray] = queue.Queue()
+    state = {"pressed_at": 0.0, "latched": False}
+
+    def collector() -> None:
+        while True:
+            recording.wait()
+            s.listener.drain()
+            parts: list[np.ndarray] = []
+            while recording.is_set():
                 try:
-                    parts.append(s.listener.q.get(timeout=0.1))
+                    parts.append(s.listener.q.get(timeout=0.05))
                 except queue.Empty:
                     pass
+            done.put(np.concatenate(parts) if parts else np.zeros(0, dtype=np.float32))
 
-        th = threading.Thread(target=_collect, daemon=True)
-        th.start()
+    threading.Thread(target=collector, daemon=True).start()
+
+    def on_press() -> None:
+        state["pressed_at"] = time.monotonic()
+        if state["latched"]:          # tap while latched: stop
+            state["latched"] = False
+            recording.clear()
+            ding(SOUND_STOP)
+            print("  ⏹ 録音終了 → 解析実行中...")
+            return
+        s.speaker.interrupt()
+        ding(SOUND_START)
+        recording.set()
+        print("  🎙️ 録音中… 話しかけてください")
+
+    def on_release() -> None:
+        held = time.monotonic() - state["pressed_at"]
+        if not recording.is_set():
+            return
+        if held < 0.25:               # short tap: latch hands-free
+            state["latched"] = True
+            return
+        recording.clear()
+        ding(SOUND_STOP)
+        print("  ⏹ 録音終了 → 解析実行中...")
+
+    # Start global hotkey listener
+    tap = CapsLockListener(on_press, on_release)
+    tap.start()
+
+    # Also listen for Enter key in terminal if active
+    def terminal_listener() -> None:
+        while True:
+            try:
+                input()
+            except (KeyboardInterrupt, EOFError):
+                break
+            if recording.is_set():
+                state["latched"] = False
+                recording.clear()
+                ding(SOUND_STOP)
+                print("  ⏹ 録音終了 → 解析実行中...")
+            else:
+                state["latched"] = True
+                s.speaker.interrupt()
+                ding(SOUND_START)
+                recording.set()
+                print("  🎙️ 録音中… 話しかけてください")
+
+    threading.Thread(target=terminal_listener, daemon=True).start()
+
+    while True:
         try:
-            input()
-        except (KeyboardInterrupt, EOFError):
-            stop.set()
-            th.join()
-            print("\n終了します。")
+            pcm = done.get()
+        except KeyboardInterrupt:
             break
-        stop.set()
-        th.join()
-        if parts and not s.process(np.concatenate(parts)):
+        if not s.process(pcm):
             break
 
 
