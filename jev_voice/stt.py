@@ -54,9 +54,11 @@ class WhisperServer:
             raise SystemExit(f"Whisper model missing: {config.WHISPER_MODEL}\n"
                              f"  Download e.g.: curl -L -o {config.WHISPER_MODEL} https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{config.WHISPER_MODEL.name}")
         cwd = str(local_bin.parent) if local_bin.exists() and exe == str(local_bin) else None
+        model_path = str(config.WHISPER_MODEL.resolve())
         self.proc = subprocess.Popen(
-            [exe, "-m", str(config.WHISPER_MODEL), "--host", "127.0.0.1", "--port", str(self.port),
-             "-t", str(config.WHISPER_THREADS), "-l", config.WHISPER_LANGUAGE, "-nt"],
+            [exe, "-m", model_path, "--host", "127.0.0.1", "--port", str(self.port),
+             "-t", str(config.WHISPER_THREADS), "-l", config.WHISPER_LANGUAGE, "-nt",
+             "-nf", "-bo", "1", "-bs", "1"],
             cwd=cwd,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )

@@ -46,7 +46,7 @@ _default_whisper = (
     else ROOT / "models" / "ggml-base.en.bin"
 )
 WHISPER_MODEL = Path(os.environ.get("WHISPER_MODEL", _default_whisper))
-WHISPER_PORT = int(os.environ.get("WHISPER_PORT", "8178"))
+WHISPER_PORT = int(os.environ.get("WHISPER_PORT", "8188"))
 WHISPER_THREADS = int(os.environ.get("WHISPER_THREADS", str(min(8, os.cpu_count() or 6))))
 
 SAMPLE_RATE = 16000
