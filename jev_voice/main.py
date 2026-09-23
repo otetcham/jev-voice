@@ -518,11 +518,15 @@ def run_always_on(s: Session) -> None:
 
 
 def run_ptt(s: Session) -> None:
-    print("⏎  Push-to-talk: Enter to start, Enter to stop.")
+    print("⏎  [Push-to-Talk / プッシュ・トゥ・トーク] Enterキーを押して話し、話し終わったらもう一度Enterを押してください。 (終了: Ctrl+C)")
     while True:
-        input("  [Enter] to talk… ")
+        try:
+            input("  👉 [Enter] で録音開始… ")
+        except (KeyboardInterrupt, EOFError):
+            print("\n終了します。")
+            break
         s.listener.drain()
-        print("  recording, [Enter] to stop")
+        print("  🎙️ 録音中… 話し終わったら [Enter] を押してください")
         parts: list[np.ndarray] = []
         stop = threading.Event()
 
@@ -535,8 +539,15 @@ def run_ptt(s: Session) -> None:
 
         th = threading.Thread(target=_collect, daemon=True)
         th.start()
-        input()
-        stop.set(); th.join()
+        try:
+            input()
+        except (KeyboardInterrupt, EOFError):
+            stop.set()
+            th.join()
+            print("\n終了します。")
+            break
+        stop.set()
+        th.join()
         if parts and not s.process(np.concatenate(parts)):
             break
 

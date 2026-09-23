@@ -44,17 +44,20 @@ class WhisperServer:
     def start(self) -> None:
         if self._alive():
             return
-        exe = shutil.which("whisper-server") or shutil.which("whisper-server.exe")
+        local_bin = config.ROOT / "bin" / "whisper-server.exe"
+        exe = shutil.which("whisper-server") or shutil.which("whisper-server.exe") or (str(local_bin) if local_bin.exists() else None)
         if not exe:
             import sys
-            hint = "brew install whisper-cpp" if sys.platform == "darwin" else "download pre-built binary from https://github.com/ggerganov/whisper.cpp/releases and add to PATH"
+            hint = "brew install whisper-cpp" if sys.platform == "darwin" else "download pre-built binary from https://github.com/ggerganov/whisper.cpp/releases and place in bin/"
             raise SystemExit(f"whisper-server not found: {hint}")
         if not config.WHISPER_MODEL.exists():
             raise SystemExit(f"Whisper model missing: {config.WHISPER_MODEL}\n"
                              f"  Download e.g.: curl -L -o {config.WHISPER_MODEL} https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{config.WHISPER_MODEL.name}")
+        cwd = str(local_bin.parent) if local_bin.exists() and exe == str(local_bin) else None
         self.proc = subprocess.Popen(
             [exe, "-m", str(config.WHISPER_MODEL), "--host", "127.0.0.1", "--port", str(self.port),
              "-t", str(config.WHISPER_THREADS), "-l", config.WHISPER_LANGUAGE, "-nt"],
+            cwd=cwd,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         for _ in range(200):
