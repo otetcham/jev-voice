@@ -1,7 +1,7 @@
 [project]
 name = "jev-voice"
 version = "0.1.0"
-description = "Talk to your Mac. Local whisper.cpp + one Jev (TypeSafe System One) call per command + macOS automation."
+description = "Talk to your computer (Windows & macOS). Local whisper.cpp + one Jev (TypeSafe System One / OpenRouter) call per command + OS automation."
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -12,9 +12,9 @@ dependencies = [
     "jev-ultrafast",
     "kokoro-onnx>=0.6.1",
     "numpy>=2.5.3",
-    "pyobjc-framework-applicationservices>=12.2.2",
-    "pyobjc-framework-cocoa>=12.2.2",
-    "pyobjc-framework-quartz>=12.2.2",
+    "pyobjc-framework-applicationservices>=12.2.2; sys_platform == 'darwin'",
+    "pyobjc-framework-cocoa>=12.2.2; sys_platform == 'darwin'",
+    "pyobjc-framework-quartz>=12.2.2; sys_platform == 'darwin'",
     "sounddevice>=0.5.6",
     "soundfile>=0.14.0",
 ]

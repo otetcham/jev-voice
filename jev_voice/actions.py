@@ -4,10 +4,17 @@ from __future__ import annotations
 import os
 import shlex
 import subprocess
+import sys
 import time
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote_plus
+
+if sys.platform == "win32":
+    from . import actions_windows as _win
+    sys.modules[__name__] = _win
+else:
+    pass
 
 # ---------------------------------------------------------------- apps
 

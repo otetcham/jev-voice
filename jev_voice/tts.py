@@ -72,11 +72,16 @@ PREWARM = ["At your service, sir.", "Ready when you are, sir.", "Done, sir.", "V
            "Undo.", "Select all.", "Enter.", "Reload.", "New tab.", "Locking."]
 
 
+import shutil
+import sys
+
 @lru_cache(maxsize=1)
 def best_say_voice() -> str:
     """Prefer a downloaded Premium/Enhanced English voice; else the configured default."""
     if os.environ.get("TTS_VOICE"):
         return os.environ["TTS_VOICE"]
+    if sys.platform != "darwin":
+        return config.TTS_VOICE
     try:
         out = subprocess.run(["say", "-v", "?"], capture_output=True, text=True).stdout
     except Exception:
@@ -100,6 +105,48 @@ def best_say_voice() -> str:
     return config.TTS_VOICE
 
 
+def _play_audio(path: Path, wait: bool = False) -> subprocess.Popen | None:
+    if sys.platform == "darwin":
+        proc = subprocess.Popen(["afplay", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if wait:
+            proc.wait()
+        return proc
+    elif sys.platform == "win32":
+        p_str = str(path).replace("'", "''")
+        cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+               f"(New-Object System.Media.SoundPlayer '{p_str}').PlaySync()"]
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if wait:
+            proc.wait()
+        return proc
+    else:
+        for player in ["paplay", "aplay", "mpv", "ffplay"]:
+            if shutil.which(player):
+                proc = subprocess.Popen([player, str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if wait:
+                    proc.wait()
+                return proc
+    return None
+
+
+def _system_say(text: str, wait: bool = False) -> subprocess.Popen | None:
+    if sys.platform == "darwin":
+        proc = subprocess.Popen(["say", "-v", best_say_voice(), "-r", str(config.TTS_RATE), text],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if wait:
+            proc.wait()
+        return proc
+    elif sys.platform == "win32":
+        t_esc = text.replace("'", "''")
+        cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+               f"Add-Type -AssemblyName System.Speech; (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak('{t_esc}')"]
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if wait:
+            proc.wait()
+        return proc
+    return None
+
+
 class Speaker:
     def __init__(self, enabled: bool = True, engine: str | None = None) -> None:
         self.enabled = enabled
@@ -107,7 +154,7 @@ class Speaker:
         if self.engine == "elevenlabs" and not ELEVEN_KEY:
             self.engine = "say"
         if self.engine == "kokoro" and not kokoro_available():
-            print("  (tts: kokoro not installed or model files missing; using say)")
+            print("  (tts: kokoro not installed or model files missing; using system tts)")
             self.engine = "say"
         self.voice = ELEVEN_VOICE if self.engine == "elevenlabs" else KOKORO_VOICE if self.engine == "kokoro" else best_say_voice()
         self.rate = config.TTS_RATE
@@ -131,24 +178,17 @@ class Speaker:
             if not (path.exists() and path.stat().st_size > 0):
                 path = kokoro_synthesize(text, path)
             if path is not None:
-                self.proc = subprocess.Popen(["afplay", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                if wait:
-                    self.proc.wait()
+                self.proc = _play_audio(path, wait=wait)
                 return est
         if self.engine == "elevenlabs":
             path = self._cached(text)
             if path is None:
                 path = self._synthesize(text)
             if path is not None:
-                self.proc = subprocess.Popen(["afplay", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                if wait:
-                    self.proc.wait()
+                self.proc = _play_audio(path, wait=wait)
                 return est
-            # fall through to say
-        self.proc = subprocess.Popen(["say", "-v", best_say_voice(), "-r", str(self.rate), text],
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if wait:
-            self.proc.wait()
+            # fall through to system tts
+        self.proc = _system_say(text, wait=wait)
         return est
 
     def interrupt(self) -> None:

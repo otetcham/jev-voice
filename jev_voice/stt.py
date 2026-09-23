@@ -44,15 +44,17 @@ class WhisperServer:
     def start(self) -> None:
         if self._alive():
             return
-        exe = shutil.which("whisper-server")
+        exe = shutil.which("whisper-server") or shutil.which("whisper-server.exe")
         if not exe:
-            raise SystemExit("whisper-server not found: brew install whisper-cpp")
+            import sys
+            hint = "brew install whisper-cpp" if sys.platform == "darwin" else "download pre-built binary from https://github.com/ggerganov/whisper.cpp/releases and add to PATH"
+            raise SystemExit(f"whisper-server not found: {hint}")
         if not config.WHISPER_MODEL.exists():
             raise SystemExit(f"Whisper model missing: {config.WHISPER_MODEL}\n"
-                             "  curl -L -o models/ggml-base.en.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin")
+                             f"  Download e.g.: curl -L -o {config.WHISPER_MODEL} https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{config.WHISPER_MODEL.name}")
         self.proc = subprocess.Popen(
             [exe, "-m", str(config.WHISPER_MODEL), "--host", "127.0.0.1", "--port", str(self.port),
-             "-t", str(config.WHISPER_THREADS), "-l", "en", "-nt"],
+             "-t", str(config.WHISPER_THREADS), "-l", config.WHISPER_LANGUAGE, "-nt"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         for _ in range(200):
@@ -63,7 +65,7 @@ class WhisperServer:
         raise SystemExit("whisper-server failed to start")
 
     def _warm_up(self) -> None:
-        """First inference compiles Metal shaders (~2 s); pay that before the user speaks."""
+        """First inference compiles GPU/CPU kernels (~2 s); pay that before the user speaks."""
         tone = 0.05 * np.sin(np.linspace(0, 2 * np.pi * 220 * 0.6, int(config.SAMPLE_RATE * 0.6)))
         try:
             self.transcribe(tone.astype(np.float32))
@@ -77,7 +79,7 @@ class WhisperServer:
     def transcribe(self, pcm: np.ndarray) -> str:
         files = {"file": ("audio.wav", _wav_bytes(pcm), "audio/wav")}
         data = {"response_format": "json", "temperature": "0.0", "no_timestamps": "true",
-                "language": "en"}
+                "language": config.WHISPER_LANGUAGE}
         r = self.http.post(self.url + "/inference", files=files, data=data)
         r.raise_for_status()
         text = (r.json().get("text") or "").strip()

@@ -1,67 +1,89 @@
-# Jev Voice
+# Jev Voice (Windows & macOS + Japanese Support)
 
-Talk to your Mac. You speak, it opens apps, types, searches, scrolls, presses keys.
+Talk to your PC / Mac in English or Japanese. You speak, it opens apps, types, searches, scrolls, presses keys.
 
-Everything runs locally except one ~250 ms call to **Jev** (TypeSafe's System One
-model), which turns the transcript into a typed action plus typed arguments in a
-single fan-out request. Jev never generates text; code produces candidate values
-and Jev *selects*. Code owns execution.
+Everything runs locally except one ~250 ms call to **Jev** (TypeSafe's System One model / OpenRouter `typesafe/jev-1.13`), which turns the transcript into a typed action plus typed arguments in a single fan-out request. Jev never generates text; code produces candidate values and Jev *selects*. Code owns execution.
 
 ```
-mic ─► energy VAD ─► whisper.cpp (Metal, ~100 ms) ─► Jev (1 request, ~250 ms) ─► macOS actions ─► `say`
+mic ─► energy VAD ─► whisper.cpp (~100 ms) ─► Jev (1 request, ~250 ms) ─► OS actions (Win32/macOS) ─► TTS
 ```
+
+## Features
+- **Cross-Platform**: Full native execution on **Windows** (`ctypes.windll.user32` / PowerShell) and **macOS** (`AppKit` / `Quartz`).
+- **Japanese Voice Support (日本語対応)**: Transcribe and execute natural Japanese commands (e.g. 「Chromeを開いて」「YouTubeでLo-Fiを検索」「こんにちはと入力してエンター」).
+- **Dual API Support**: Works out-of-the-box with **TypeSafe API** (`TYPESAFE_API_KEY`) or **OpenRouter** (`OPENROUTER_API_KEY`).
+
+---
+
+## Setup (Windows)
+
+1. **Clone & Configure**:
+   ```powershell
+   git clone https://github.com/otetcham/jev-voice.git
+   cd jev-voice
+   copy .env.example .env
+   ```
+2. **Set your API Key** in `.env`:
+   ```env
+   # Either TypeSafe native key:
+   TYPESAFE_API_KEY=your_key_here
+   # Or OpenRouter key:
+   OPENROUTER_API_KEY=sk-or-v1-...
+   
+   # For Japanese recognition:
+   WHISPER_LANGUAGE=ja
+   ```
+3. **Install Dependencies**:
+   ```powershell
+   uv sync
+   # or
+   pip install -e .
+   ```
+4. **Whisper Model (Multilingual for Japanese)**:
+   ```powershell
+   mkdir -p models
+   curl -L -o models/ggml-base.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin
+   ```
+   Install `whisper-server.exe` from [whisper.cpp releases](https://github.com/ggerganov/whisper.cpp/releases) and add it to your PATH.
+
+---
 
 ## Setup (macOS, Apple Silicon)
 
 ```sh
-cp .env.example .env                       # add your TYPESAFE_API_KEY from console.typesafe.ai
+cp .env.example .env                       # add your TYPESAFE_API_KEY or OPENROUTER_API_KEY
 ./scripts/setup.sh
 ```
 
-The script installs whisper-cpp + ffmpeg, downloads the model, syncs the Python
-env, remaps **Caps Lock → F18** with `hidutil` (persisted by a LaunchAgent so it
-survives reboots), installs a `jev` launcher in `~/.local/bin`, and opens the
-three permission panes. Grant the terminal app you launch from (Cursor / Terminal /
-iTerm) **Microphone**, **Accessibility** and **Input Monitoring**. If a permission
-is missing at launch, Jev Voice prompts for it and waits.
-
-Undo the Caps Lock remap any time: `./scripts/uninstall-capslock.sh`.
+---
 
 ## Run
 
 ```sh
-jev                                 # hands-free: "Alfred, open chrome" (or tap CAPS LOCK, then speak)
-jev --hold                          # hold CAPS LOCK to talk, release to run; no wake word
-jev --always-on                     # open mic, EVERY utterance is a command (no wake word)
-jev --ptt                           # push-to-talk in the terminal: Enter start / Enter stop
-jev --device "RØDE"                 # pick a mic (uv run python -m sounddevice)
-jev --text "open chrome and go to youtube" --dry-run   # test routing, no mic
+# Push-to-talk in terminal (Press Enter to start/stop):
+jev-voice --ptt
+
+# Direct text command test (no microphone needed):
+jev-voice --text "Chromeを開いて" --dry-run
+jev-voice --text "YouTubeでLo-Fi音楽を検索"
+jev-voice --text "open chrome and go to youtube"
+
+# Hands-free open mic:
+jev-voice --always-on
 ```
 
-**Hands-free mode (default):** the mic stays open and whisper transcribes every
-utterance locally (~100 ms, nothing leaves the machine). Only utterances that name
-the assistant (`WAKE_WORDS` in `.env`, default Alfred / Jarvis) go to Jev. After a
-command you have `FOLLOWUP_SECONDS` (8) to chain more without the name: "Alfred,
-open chrome" … "go to youtube" … "scroll down". Saying just "Alfred" chimes and
-arms the next utterance. A Caps Lock tap does the same.
+## What you can say (音声コマンド例)
 
-**Caps Lock modes (`--hold`):** hold it while speaking (Tink = recording, Pop = sent). A
-short tap (<250 ms) latches hands-free recording; tap again to send. Caps Lock no
-longer toggles capitals while the remap is installed.
-
-## What you can say
-
-| Say | Does |
-| --- | --- |
-| "open cursor", "switch to chrome" | `open -a` the matching installed app (Jev picks from the real app list) |
-| "go to youtube", "go to stripe dot com" | opens the site |
-| "search youtube for lofi hip hop", "google best ramen near me" | site-specific search |
-| "type hello world and hit enter" | types into the focused field, optional submit |
-| "close this tab", "select all and copy", "undo", "go back", "reload" | ~45 keyboard shortcuts |
-| "scroll down a lot", "go to the top" | real scroll-wheel events |
-| "volume up", "mute", "pause the music", "next song" | system volume / media keys |
-| "take a screenshot", "open my downloads", "lock the screen", "toggle dark mode" | misc |
-| "open notes and type buy milk and press enter" | compound: Jev flags it, code splits it, each step runs in order |
+| 英語 (English) | 日本語 (Japanese) | 動作 (Action) |
+| --- | --- | --- |
+| "open chrome", "switch to cursor" | 「Chromeを開いて」「メモ帳を起動」 | アプリ起動・切り替え |
+| "go to youtube", "open github" | 「YouTubeを開いて」「GitHubに行って」 | サイトを開く |
+| "search youtube for lofi hip hop" | 「YouTubeでローファイを検索」「Pythonの使い方をググって」 | 各種Web検索 |
+| "type hello world and hit enter" | 「こんにちはと入力してエンター」 | フォーカス中の欄に入力・送信 |
+| "close this tab", "copy", "paste" | 「タブを閉じて」「コピー」「ペースト」「やり直し」 | キーボードショートカット |
+| "scroll down", "go to top" | 「下にスクロール」「一番上へ移動」 | マウスホイールスクロール |
+| "volume up", "mute", "next song" | 「音量を上げて」「ミュート」「次の曲」 | 音量・メディア操作 |
+| "take a screenshot", "lock the screen" | 「スクリーンショットを撮って」「画面をロック」 | システム操作 |
 
 ## Multi-step tasks: the ultrafast loop on the desktop
 

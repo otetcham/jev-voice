@@ -21,10 +21,27 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 TYPESAFE_API_KEY = os.environ.get("TYPESAFE_API_KEY", "")
-TYPESAFE_URL = os.environ.get("TYPESAFE_URL", "https://api.typesafe.ai/v1/systemone")
-JEV_MODEL = os.environ.get("JEV_MODEL", "jev-latest")
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 
-WHISPER_MODEL = Path(os.environ.get("WHISPER_MODEL", ROOT / "models" / "ggml-base.en.bin"))
+# API resolution: prioritize TypeSafe native key, fallback to OpenRouter decisions API
+if TYPESAFE_API_KEY:
+    API_KEY = TYPESAFE_API_KEY
+    API_URL = os.environ.get("TYPESAFE_URL", "https://api.typesafe.ai/v1/systemone")
+    JEV_MODEL = os.environ.get("JEV_MODEL", "jev-latest")
+elif OPENROUTER_API_KEY:
+    API_KEY = OPENROUTER_API_KEY
+    API_URL = os.environ.get("OPENROUTER_URL", "https://openrouter.ai/api/alpha/decisions")
+    JEV_MODEL = os.environ.get("JEV_MODEL", "typesafe/jev-1.13")
+else:
+    API_KEY = ""
+    API_URL = os.environ.get("TYPESAFE_URL", "https://api.typesafe.ai/v1/systemone")
+    JEV_MODEL = os.environ.get("JEV_MODEL", "jev-latest")
+
+TYPESAFE_URL = API_URL
+
+WHISPER_LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "ja")
+_default_whisper = ROOT / "models" / "ggml-base.bin" if (ROOT / "models" / "ggml-base.bin").exists() else ROOT / "models" / "ggml-base.en.bin"
+WHISPER_MODEL = Path(os.environ.get("WHISPER_MODEL", _default_whisper))
 WHISPER_PORT = int(os.environ.get("WHISPER_PORT", "8178"))
 WHISPER_THREADS = int(os.environ.get("WHISPER_THREADS", "6"))
 

@@ -12,9 +12,15 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+import sys
 import httpx
 
-from . import actions, config
+from . import config
+
+if sys.platform == "win32":
+    from . import actions_windows as actions
+else:
+    from . import actions
 
 ACTIONS: dict[str, str] = {
     "open_app": "Launch, open, switch to, or bring up an application program on the Mac (for example Chrome, Cursor, Slack, Finder, Terminal, Notes)",
@@ -81,17 +87,23 @@ SHORTCUT_CRITERIA: dict[str, str] = {
 
 # regexes that peel the payload text off a spoken command
 _TEXT_PATTERNS = [
+    # English patterns
     r"^(?:please\s+)?(?:can you\s+|could you\s+)?(?:type|write|enter|dictate|input|put|insert|say|send|text|paste)(?:\s+in|\s+out|\s+the\s+words?|\s+the\s+text|\s+this|\s+that)?[:,]?\s+(?P<t>.+)$",
     r"^(?:please\s+)?(?:can you\s+|could you\s+)?(?:search|google|look\s*up|find|look\s+for|show\s+me|pull\s+up)(?:\s+(?:on|in)\s+\w+(?:\s+\w+)?)?(?:\s+for)?[:,]?\s+(?P<t>.+)$",
     r"^.*?\b(?:for|about|of|on)\s+(?P<t>.+)$",
-    r"[\"“'](?P<t>[^\"”']+)[\"”']",
+    r"[\"“'「](?P<t>[^\"”'」]+)[\"”'」]",
+    # Japanese patterns
+    r"^(?P<t>.+?)(?:と入力|と書いて|って打って|を入力して|とタイプして)$",
+    r"^(?P<t>.+?)(?:を検索|で検索|について調べて|をググって|調べて)$",
+    r"^(?:検索|ググる|調べる)[:：\s]+(?P<t>.+)$",
+    r"^(?:入力|タイプ)[:：\s]+(?P<t>.+)$",
 ]
-_TITLE = re.compile(r"\b(?:called|titled|named|labeled|that says|saying|with the title)\s+(?P<t>.+)$", re.I)
+_TITLE = re.compile(r"\b(?:called|titled|named|labeled|that says|saying|with the title|という名前の|というタイトルの)\s+(?P<t>.+)$", re.I)
 _TRAILING_IN_APP = re.compile(r"\s+(?:in|into|inside|on)\s+(?:the\s+)?(?:[A-Z][\w.]*|notes|chrome|cursor|safari|slack|mail|messages|terminal|finder)(?:\s+app)?\s*[.!?]?$")
 _TRAILING_SUBMIT = re.compile(
-    r"[\s,.]*(?:and|then)?\s*(?:hit|press|and)\s+(?:enter|return|send|submit)\s*[.!]?$", re.I
+    r"[\s,.]*(?:and|then)?\s*(?:hit|press|and|そして)?\s*(?:enter|return|send|submit|エンター|送信)\s*[.!]?$", re.I
 )
-_SPLIT_COMPOUND = re.compile(r"\s*(?:,\s*)?\b(?:and then|then|and also|and)\b\s*", re.I)
+_SPLIT_COMPOUND = re.compile(r"\s*(?:,\s*)?\b(?:and then|then|and also|and|してから|のあとに|その後)\b\s*", re.I)
 
 
 def _clean(s: str) -> str:
@@ -159,19 +171,25 @@ class Plan:
 
 
 class Brain:
-    def __init__(self, api_key: str | None = None, model: str | None = None) -> None:
-        self.api_key = api_key or config.TYPESAFE_API_KEY
+    def __init__(self, api_key: str | None = None, model: str | None = None, url: str | None = None) -> None:
+        self.api_key = api_key or config.API_KEY
         if not self.api_key:
-            raise SystemExit("TYPESAFE_API_KEY is not set (put it in .env)")
+            raise SystemExit("Neither TYPESAFE_API_KEY nor OPENROUTER_API_KEY is set (put it in .env)")
         self.model = model or config.JEV_MODEL
+        self.url = url or config.API_URL
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        if "openrouter.ai" in self.url:
+            headers["HTTP-Referer"] = "https://github.com/otetcham/jev-voice"
+            headers["X-Title"] = "Jev Voice Windows"
         self.http = httpx.Client(
             timeout=15.0,
-            headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+            headers=headers,
             http2=False,
         )
         # Keep the TCP+TLS connection warm so the first real command is fast.
         try:
-            self.http.get("https://api.typesafe.ai/v1/models")
+            if "typesafe.ai" in self.url:
+                self.http.get("https://api.typesafe.ai/v1/models")
         except Exception:
             pass
 
@@ -295,7 +313,7 @@ class Brain:
         }
         payload = {"state": state, "model": self.model, "questions": self._questions(cands, apps)}
         t0 = time.perf_counter()
-        r = self.http.post(config.TYPESAFE_URL, json=payload)
+        r = self.http.post(self.url, json=payload)
         r.raise_for_status()
         data = r.json()
         ms = int((time.perf_counter() - t0) * 1000)
