@@ -41,7 +41,8 @@ TYPESAFE_URL = API_URL
 
 WHISPER_LANGUAGE = os.environ.get("WHISPER_LANGUAGE", "ja")
 _default_whisper = (
-    ROOT / "models" / "ggml-tiny.bin" if (ROOT / "models" / "ggml-tiny.bin").exists()
+    ROOT / "models" / "ggml-small.bin" if (ROOT / "models" / "ggml-small.bin").exists()
+    else ROOT / "models" / "ggml-tiny.bin" if (ROOT / "models" / "ggml-tiny.bin").exists()
     else ROOT / "models" / "ggml-base.bin" if (ROOT / "models" / "ggml-base.bin").exists()
     else ROOT / "models" / "ggml-base.en.bin"
 )
