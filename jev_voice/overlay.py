@@ -146,7 +146,16 @@ class Overlay:
 
 
 class NullOverlay:
-    def set(self, state: str, text: str, revert_after: float | None = None) -> None:
+    def set(self, state: str, text: str = "", revert_after: float | None = None) -> None:
+        pass
+
+    def add_task(self, label: str = "AGY") -> str:
+        return "noop"
+
+    def remove_task(self, task_id: str) -> None:
+        pass
+
+    def clear_tasks(self) -> None:
         pass
 
     def run(self, worker: Callable[[], None]) -> None:

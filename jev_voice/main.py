@@ -131,9 +131,13 @@ def run_task(goal: str, speaker: Speaker | None = None, start_url: str | None = 
 
         # Fallback to Antigravity CLI
         print("  ▶ [Windows Fallback] Dispatching task to Antigravity CLI...")
+        tid = OVERLAY.add_task("AGY")
         OVERLAY.set("thinking", "Antigravity CLIで実行中...")
         from .antigravity_runner import run_antigravity
-        run_antigravity(f"ブラウザで次の操作を実行してください: {goal} (URL: {start_url or '適切に選択'})")
+        try:
+            run_antigravity(f"ブラウザで次の操作を実行してください: {goal} (URL: {start_url or '適切に選択'})")
+        finally:
+            OVERLAY.remove_task(tid)
         OVERLAY.set("done", "完了しました", revert_after=5.0)
         return "完了しました。"
 
@@ -278,20 +282,25 @@ def handle(brain: Brain, speaker: Speaker, utterance: str, dry: bool, depth: int
     # Antigravity CLI Fallback: when Jev cannot execute the user request, hand off to Antigravity CLI
     if failed and not dry and config.FALLBACK_TO_ANTIGRAVITY and is_agy_available() and plan.action != "none":
         print(f"  ⚡ Jev単体で実行できなかったため、Antigravity CLI へ引き継ぎます: {utterance}")
-        OVERLAY.set("thinking", f"⚡ Antigravity: {utterance[:25]}…")
+        tid = OVERLAY.add_task("AGY")
+        OVERLAY.set("thinking", f"Antigravity: {utterance[:22]}…")
         ding(SOUND_START)
-        
+
         def update_overlay(text_line: str):
-            OVERLAY.set("thinking", f"⚡ {text_line[:30]}")
-            
-        agy_reply = run_antigravity(
-            utterance,
-            model=config.ANTIGRAVITY_MODEL or None,
-            on_output=update_overlay,
-            timeout=config.ANTIGRAVITY_TIMEOUT,
-        )
+            OVERLAY.set("thinking", f"{text_line[:26]}")
+
+        try:
+            agy_reply = run_antigravity(
+                utterance,
+                model=config.ANTIGRAVITY_MODEL or None,
+                on_output=update_overlay,
+                timeout=config.ANTIGRAVITY_TIMEOUT,
+            )
+        finally:
+            OVERLAY.remove_task(tid)
+
         print(f"  ◀ [Antigravity] {agy_reply}")
-        OVERLAY.set("done", f"Antigravity: {utterance}", revert_after=4.0)
+        OVERLAY.set("done", "完了しました", revert_after=4.0)
         ding(SOUND_DONE)
         if FEEDBACK == "voice":
             speaker.say(flavor("Done."))
@@ -470,7 +479,7 @@ def run_smart(s: Session) -> None:
     else:
         ding(SOUND_DONE)
     s.listener.pause(0.8)
-    s.listener.on_speech_start = lambda: OVERLAY.set("listening", "Listening…")
+    s.listener.on_speech_start = lambda: OVERLAY.set("listening", "音声入力中")
     while True:
         pcm = s.listener.next_utterance()
         OVERLAY.set("heard", "Transcribing…")
@@ -642,7 +651,7 @@ def run_ptt(s: Session) -> None:
         s.speaker.interrupt()
         ding(SOUND_START)
         recording.set()
-        OVERLAY.set("listening", "🎙️ 音声を聞き取り中…")
+        OVERLAY.set("listening", "音声入力中")
         print("  🎙️ 録音中… 話しかけてください")
 
     def on_release() -> None:
@@ -679,7 +688,7 @@ def run_ptt(s: Session) -> None:
                 s.speaker.interrupt()
                 ding(SOUND_START)
                 recording.set()
-                OVERLAY.set("listening", "🎙️ 音声を聞き取り中…")
+                OVERLAY.set("listening", "音声入力中")
                 print("  🎙️ 録音中… 話しかけてください")
 
     threading.Thread(target=terminal_listener, daemon=True).start()
