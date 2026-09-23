@@ -80,6 +80,24 @@ def frontmost_pid() -> int:
     return int(pid.value)
 
 
+def frontmost_app() -> str:
+    """Return app name or title of current foreground window."""
+    if not user32:
+        return ""
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return ""
+    length = user32.GetWindowTextLengthW(hwnd)
+    if length > 0:
+        buf = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buf, length + 1)
+        title = buf.value.strip()
+        if " - " in title:
+            return title.split(" - ")[-1].strip()
+        return title
+    return ""
+
+
 def launch_app(name: str) -> None:
     """Launch application by name on Windows."""
     # Check known aliases
@@ -101,6 +119,15 @@ def launch_app(name: str) -> None:
     except Exception:
         # Fallback to search in start menu
         subprocess.Popen(["cmd", "/c", "start", "", target], shell=True)
+
+
+def open_app(name: str) -> None:
+    launch_app(name)
+
+
+def focus_app(name: str, timeout: float = 2.0) -> bool:
+    launch_app(name)
+    return True
 
 
 def open_url(url: str) -> None:

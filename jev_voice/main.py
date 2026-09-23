@@ -27,6 +27,13 @@ from .overlay import NullOverlay
 from .persona import flavor
 from .tts import Speaker
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 OVERLAY = NullOverlay()  # replaced with a real Overlay in run_voice unless --no-overlay
 
 SOUND_START = "/System/Library/Sounds/Tink.aiff"
@@ -39,7 +46,14 @@ IDLE_LABEL = "Listening"
 
 
 def ding(path: str) -> None:
-    subprocess.Popen(["afplay", "-v", "0.4", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if sys.platform == "darwin":
+        subprocess.Popen(["afplay", "-v", "0.4", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    elif sys.platform == "win32":
+        try:
+            import winsound
+            winsound.MessageBeep(winsound.MB_OK)
+        except Exception:
+            pass
 
 
 _DESKTOP = None

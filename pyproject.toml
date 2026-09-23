@@ -9,7 +9,7 @@ dependencies = [
     "anthropic>=1.7.0",
     "chess>=1.11.2",
     "httpx>=0.28.1",
-    "jev-ultrafast",
+    "jev-ultrafast @ git+https://github.com/browser-use/jev-ultrafast.git",
     "kokoro-onnx>=0.6.1",
     "numpy>=2.5.3",
     "pyobjc-framework-applicationservices>=12.2.2; sys_platform == 'darwin'",
@@ -28,6 +28,9 @@ jev-modes = "jev_voice.modes:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["jev_voice"]

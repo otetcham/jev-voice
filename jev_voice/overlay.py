@@ -12,18 +12,22 @@ import threading
 import warnings
 from typing import Callable
 
-import objc  # type: ignore
+try:
+    import objc  # type: ignore
 
-warnings.filterwarnings("ignore", category=objc.ObjCPointerWarning)
+    warnings.filterwarnings("ignore", category=objc.ObjCPointerWarning)
 
-from AppKit import (  # type: ignore
-    NSApplication, NSApplicationActivationPolicyAccessory, NSBackingStoreBuffered, NSColor, NSFont,
-    NSMakeRect, NSPanel, NSScreen, NSTextField, NSView, NSWindowCollectionBehaviorCanJoinAllSpaces,
-    NSWindowCollectionBehaviorStationary, NSWindowStyleMaskBorderless, NSWindowStyleMaskNonactivatingPanel,
-    NSStatusWindowLevel,
-)
-from Foundation import NSObject  # type: ignore
-from PyObjCTools import AppHelper  # type: ignore
+    from AppKit import (  # type: ignore
+        NSApplication, NSApplicationActivationPolicyAccessory, NSBackingStoreBuffered, NSColor, NSFont,
+        NSMakeRect, NSPanel, NSScreen, NSTextField, NSView, NSWindowCollectionBehaviorCanJoinAllSpaces,
+        NSWindowCollectionBehaviorStationary, NSWindowStyleMaskBorderless, NSWindowStyleMaskNonactivatingPanel,
+        NSStatusWindowLevel,
+    )
+    from Foundation import NSObject  # type: ignore
+    from PyObjCTools import AppHelper  # type: ignore
+    _HAS_OBJC = True
+except (ImportError, ModuleNotFoundError):
+    _HAS_OBJC = False
 
 COLORS = {
     "idle": (0.55, 0.55, 0.58),
@@ -142,3 +146,7 @@ class NullOverlay:
 
     def run(self, worker: Callable[[], None]) -> None:
         worker()
+
+
+if not _HAS_OBJC:
+    Overlay = NullOverlay  # type: ignore

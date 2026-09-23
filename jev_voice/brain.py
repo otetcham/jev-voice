@@ -93,7 +93,9 @@ _TEXT_PATTERNS = [
     r"^.*?\b(?:for|about|of|on)\s+(?P<t>.+)$",
     r"[\"“'「](?P<t>[^\"”'」]+)[\"”'」]",
     # Japanese patterns
-    r"^(?P<t>.+?)(?:と入力|と書いて|って打って|を入力して|とタイプして)$",
+    r"^(?P<t>.+?)(?:と入力(?:して)?|と書いて|って打って|を入力(?:して)?|とタイプ(?:して)?|と打って)$",
+    r"^(?:(?:YouTube|Google|Amazon|Twitter|X|グーグル|ユーチューブ|アマゾン)(?:で|にて)\s*)(?P<t>.+?)(?:を検索|で検索|について調べて|をググって|調べて)?$",
+    r"^(?P<t>.+?)(?:を(?:YouTube|Google|Amazon|Twitter|X|グーグル|ユーチューブ|アマゾン)で検索)$",
     r"^(?P<t>.+?)(?:を検索|で検索|について調べて|をググって|調べて)$",
     r"^(?:検索|ググる|調べる)[:：\s]+(?P<t>.+)$",
     r"^(?:入力|タイプ)[:：\s]+(?P<t>.+)$",
@@ -101,7 +103,7 @@ _TEXT_PATTERNS = [
 _TITLE = re.compile(r"\b(?:called|titled|named|labeled|that says|saying|with the title|という名前の|というタイトルの)\s+(?P<t>.+)$", re.I)
 _TRAILING_IN_APP = re.compile(r"\s+(?:in|into|inside|on)\s+(?:the\s+)?(?:[A-Z][\w.]*|notes|chrome|cursor|safari|slack|mail|messages|terminal|finder)(?:\s+app)?\s*[.!?]?$")
 _TRAILING_SUBMIT = re.compile(
-    r"[\s,.]*(?:and|then)?\s*(?:hit|press|and|そして)?\s*(?:enter|return|send|submit|エンター|送信)\s*[.!]?$", re.I
+    r"[\s,.]*(?:and|then)?\s*(?:hit|press|and|そして|して)?\s*(?:enter|return|send|submit|エンター|送信)\s*[.!]?$", re.I
 )
 _SPLIT_COMPOUND = re.compile(r"\s*(?:,\s*)?\b(?:and then|then|and also|and|してから|のあとに|その後)\b\s*", re.I)
 
@@ -121,17 +123,18 @@ def text_candidates(utterance: str) -> dict[str, str]:
         if t and t not in cands:
             cands.append(t)
 
-    m = _TITLE.search(utterance)
+    cleaned = _clean(utterance)
+    m = _TITLE.search(utterance) or _TITLE.search(cleaned)
     if m:
         add(m.group("t"))
-    for pat in _TEXT_PATTERNS:
-        m = re.search(pat, utterance, flags=re.I)
-        if m:
-            add(m.group("t"))
-            add(_TRAILING_IN_APP.sub("", m.group("t")))
-    whole = _clean(utterance)
-    if whole and whole not in cands:
-        cands.append(whole)
+    for target_str in (utterance, cleaned):
+        for pat in _TEXT_PATTERNS:
+            m = re.search(pat, target_str, flags=re.I)
+            if m:
+                add(m.group("t"))
+                add(_TRAILING_IN_APP.sub("", m.group("t")))
+    if cleaned and cleaned not in cands:
+        cands.append(cleaned)
     if not cands:
         cands.append(utterance.strip() or "(nothing)")
     return {f"c{i}": c for i, c in enumerate(cands[:6])}
