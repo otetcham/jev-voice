@@ -57,3 +57,8 @@ TTS_RATE = int(os.environ.get("TTS_RATE", "210"))
 # Confidence gates (tune on your own usage; see docs.typesafe.ai/confidence)
 ACTION_MIN_CONFIDENCE = float(os.environ.get("ACTION_MIN_CONFIDENCE", "0.35"))
 YES = 0.6
+
+# Antigravity CLI Fallback: when Jev cannot execute or confidence is low, hand off to agy
+FALLBACK_TO_ANTIGRAVITY = os.environ.get("FALLBACK_TO_ANTIGRAVITY", "1") not in ("0", "false", "no")
+ANTIGRAVITY_MODEL = os.environ.get("ANTIGRAVITY_MODEL", "")
+ANTIGRAVITY_TIMEOUT = float(os.environ.get("ANTIGRAVITY_TIMEOUT", "180"))

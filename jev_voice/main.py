@@ -22,6 +22,7 @@ import time
 import numpy as np
 
 from . import actions, config
+from .antigravity_runner import is_agy_available, run_antigravity
 from .brain import Brain, Plan, split_compound
 from .overlay import NullOverlay
 from .persona import flavor
@@ -90,17 +91,22 @@ def run_task(goal: str, speaker: Speaker | None = None, start_url: str | None = 
         print(f"  ▶ {line}")
         OVERLAY.set("thinking", f"{step['step']}. {line}")
 
-    if TASK_DRIVER == "browser":
-        from .web import WebAgent
+    try:
+        if TASK_DRIVER == "browser":
+            from .web import WebAgent
 
-        agent_cm = WebAgent(goal, url=start_url, display=os.environ.get("AGENT_DISPLAY") or None, on_step=show)
-    else:
-        from .agent import Agent
-        from .desktop import Desktop
+            agent_cm = WebAgent(goal, url=start_url, display=os.environ.get("AGENT_DISPLAY") or None, on_step=show)
+        else:
+            from .agent import Agent
+            from .desktop import Desktop
 
-        if _DESKTOP is None:
-            _DESKTOP = Desktop()
-        agent_cm = Agent(goal, desktop=_DESKTOP, on_step=show)
+            if _DESKTOP is None:
+                _DESKTOP = Desktop()
+            agent_cm = Agent(goal, desktop=_DESKTOP, on_step=show)
+    except Exception as e:
+        print(f"  ! Jev agent driver error: {e}")
+        return "I couldn't finish that."
+
     with agent_cm as agent:
         try:
             for st in agent.run():
@@ -221,6 +227,29 @@ def handle(brain: Brain, speaker: Speaker, utterance: str, dry: bool, depth: int
             ding(SOUND_STOP)
         return False
     failed = reply in ("That failed.", "Not sure what you meant.", "I don't see that app.") or reply.startswith("I couldn't")
+    
+    # Antigravity CLI Fallback: when Jev cannot execute the user request, hand off to Antigravity CLI
+    if failed and not dry and config.FALLBACK_TO_ANTIGRAVITY and is_agy_available() and plan.action != "none":
+        print(f"  ⚡ Jev単体で実行できなかったため、Antigravity CLI へ引き継ぎます: {utterance}")
+        OVERLAY.set("thinking", f"⚡ Antigravity: {utterance[:25]}…")
+        ding(SOUND_START)
+        
+        def update_overlay(text_line: str):
+            OVERLAY.set("thinking", f"⚡ {text_line[:30]}")
+            
+        agy_reply = run_antigravity(
+            utterance,
+            model=config.ANTIGRAVITY_MODEL or None,
+            on_output=update_overlay,
+            timeout=config.ANTIGRAVITY_TIMEOUT,
+        )
+        print(f"  ◀ [Antigravity] {agy_reply}")
+        OVERLAY.set("done", f"Antigravity: {utterance}", revert_after=4.0)
+        ding(SOUND_DONE)
+        if FEEDBACK == "voice":
+            speaker.say(flavor("Done."))
+        return True
+
     if plan.action == "task" and plan.confidence >= config.ACTION_MIN_CONFIDENCE and not dry:
         OVERLAY.set("error" if failed else "done", f"Task: {utterance}  ·  {reply}", revert_after=3.0)
     if reply:
