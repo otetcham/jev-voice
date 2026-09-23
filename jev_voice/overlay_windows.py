@@ -1,38 +1,67 @@
-"""Windows Native Top-Right Floating Overlay Pill using Tkinter.
-Zero dependencies, non-activating, thread-safe.
+"""Windows Native High-DPI Top-Right Floating Overlay Pill.
+Crisp typography, native DWM rounded corners, per-monitor DPI aware.
 """
 from __future__ import annotations
 
+import ctypes
 import queue
-import sys
 import threading
-import time
 from typing import Callable
+
+user32 = ctypes.windll.user32
+dwmapi = ctypes.windll.dwmapi
+
+# Enable Per-Monitor V2 DPI awareness before Tkinter creates windows
+try:
+    user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+except Exception:
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            user32.SetProcessDPIAware()
+        except Exception:
+            pass
 
 COLORS = {
     "idle": ("#8E8E93", "待機中"),
-    "listening": ("#FF3B30", "🎙️ 録音中…"),
-    "thinking": ("#007AFF", "⏳ 音声読み込み中…"),
-    "done": ("#34C759", "✔ 完了"),
-    "error": ("#FF9500", "⚠ エラー"),
+    "listening": ("#FF3B30", "🎙️ 音声を聞き取り中…"),
+    "thinking": ("#0A84FF", "⏳ 音声を読み込み中…"),
+    "done": ("#30D158", "✔ 完了"),
+    "error": ("#FF9F0A", "⚠ エラー"),
 }
 
-BG_COLOR = "#1C1C1E"
-FG_COLOR = "#FFFFFF"
-BORDER_COLOR = "#38383A"
+BG_COLOR = "#18181C"
+FG_COLOR = "#F5F5F7"
+BORDER_COLOR = "#323238"
+
+
+def _apply_dwm_styling(hwnd: int) -> None:
+    """Apply native Windows 11 rounded corners and dark mode."""
+    try:
+        # DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2
+        corner_pref = ctypes.c_int(2)
+        dwmapi.DwmSetWindowAttribute(ctypes.c_void_p(hwnd), 33, ctypes.byref(corner_pref), ctypes.sizeof(corner_pref))
+    except Exception:
+        pass
+    try:
+        # DWMWA_USE_IMMERSIVE_DARK_MODE = 20
+        dark = ctypes.c_int(1)
+        dwmapi.DwmSetWindowAttribute(ctypes.c_void_p(hwnd), 20, ctypes.byref(dark), ctypes.sizeof(dark))
+    except Exception:
+        pass
 
 
 class WindowsOverlay:
-    """Top-right floating status pill on Windows screen."""
+    """Crisp, high-DPI floating status pill in the top-right corner."""
 
     def __init__(self) -> None:
         self.root = None
+        self.canvas_dot = None
         self.label = None
-        self.dot = None
         self.q: queue.Queue[tuple[str, str, float | None]] = queue.Queue()
-        self._current_state = "idle"
         self._revert_job = None
-        self._ready = threading.Event()
+        self.scale = 1.0
 
     def set(self, state: str, text: str, revert_after: float | None = None) -> None:
         self.q.put((state, text, revert_after))
@@ -45,7 +74,7 @@ class WindowsOverlay:
         except Exception:
             pass
         if self.root:
-            self.root.after(50, self._poll_queue)
+            self.root.after(40, self._poll_queue)
 
     def _apply(self, state: str, text: str, revert_after: float | None = None) -> None:
         if not self.root:
@@ -55,28 +84,38 @@ class WindowsOverlay:
             self.root.withdraw()
             return
 
-        color, def_title = COLORS.get(state, ("#007AFF", ""))
+        color, def_title = COLORS.get(state, ("#0A84FF", ""))
         display_text = text or def_title
 
-        # Truncate if overly long
         if len(display_text) > 36:
             display_text = display_text[:33] + "..."
 
-        self.dot.config(fg=color)
+        # Update smooth dot
+        dot_r = int(5 * self.scale)
+        self.canvas_dot.delete("all")
+        cx = int(9 * self.scale)
+        cy = int(12 * self.scale)
+        self.canvas_dot.create_oval(cx - dot_r, cy - dot_r, cx + dot_r, cy + dot_r, fill=color, outline="")
+
         self.label.config(text=display_text)
 
-        # Reposition and resize to fit text
+        # Reposition and size
         self.root.update_idletasks()
-        w = max(180, self.label.winfo_reqwidth() + 50)
-        h = 38
-        sw = self.root.winfo_screenwidth()
-        x = sw - w - 24
-        y = 24
+        req_w = self.label.winfo_reqwidth()
+        dot_w = int(24 * self.scale)
+        pad_x = int(32 * self.scale)
+        w = max(int(190 * self.scale), req_w + dot_w + pad_x)
+        h = int(42 * self.scale)
+
+        sw = user32.GetSystemMetrics(0)
+        margin = int(24 * self.scale)
+        x = sw - w - margin
+        y = margin
+
         self.root.geometry(f"{w}x{h}+{x}+{y}")
         self.root.deiconify()
         self.root.attributes("-topmost", True)
 
-        # Handle revert
         if self._revert_job:
             try:
                 self.root.after_cancel(self._revert_job)
@@ -93,6 +132,7 @@ class WindowsOverlay:
 
     def run(self, worker: Callable[[], None]) -> None:
         import tkinter as tk
+        import tkinter.font as tkfont
 
         self.root = tk.Tk()
         self.root.title("Jev Voice Overlay")
@@ -100,25 +140,51 @@ class WindowsOverlay:
         self.root.attributes("-topmost", True)
         self.root.config(bg=BORDER_COLOR)
 
-        # Frame for inner rounded-like padding and border
-        frame = tk.Frame(self.root, bg=BG_COLOR, padx=12, pady=6)
-        frame.pack(fill="both", expand=True, padx=1, pady=1)
+        try:
+            dpi = user32.GetDpiForSystem()
+            self.scale = max(1.0, dpi / 96.0)
+        except Exception:
+            self.scale = 1.0
 
-        # Color dot indicator
-        self.dot = tk.Label(frame, text="●", font=("Segoe UI", 12), fg="#007AFF", bg=BG_COLOR)
-        self.dot.pack(side="left", padx=(0, 6))
+        font_size = max(9, int(10 * self.scale))
+        # Choose best crisp font on Windows
+        font_family = "Segoe UI Variable Text"
+        try:
+            available = tkfont.families(self.root)
+            if font_family not in available:
+                font_family = "Segoe UI" if "Segoe UI" in available else "Yu Gothic UI"
+        except Exception:
+            font_family = "Segoe UI"
 
-        # Text label
-        self.label = tk.Label(frame, text="", font=("Meiryo UI", 10, "bold"), fg=FG_COLOR, bg=BG_COLOR)
+        # Frame container
+        pad_in = max(1, int(1 * self.scale))
+        frame = tk.Frame(self.root, bg=BG_COLOR, padx=int(14 * self.scale), pady=int(6 * self.scale))
+        frame.pack(fill="both", expand=True, padx=pad_in, pady=pad_in)
+
+        # Dot canvas for crisp circle
+        dot_box_w = int(18 * self.scale)
+        dot_box_h = int(24 * self.scale)
+        self.canvas_dot = tk.Canvas(frame, width=dot_box_w, height=dot_box_h, bg=BG_COLOR, highlightthickness=0)
+        self.canvas_dot.pack(side="left", padx=(0, int(4 * self.scale)))
+
+        # Crisp label
+        self.label = tk.Label(frame, text="", font=(font_family, font_size, "bold"),
+                              fg=FG_COLOR, bg=BG_COLOR)
         self.label.pack(side="left", fill="both", expand=True)
 
         # Initial hidden state
         self.root.withdraw()
 
-        # Start queue polling
-        self.root.after(50, self._poll_queue)
+        # Apply native Windows 11 DWM rounded corners
+        self.root.update_idletasks()
+        try:
+            hwnd = int(self.root.wm_frame(), 16) if isinstance(self.root.wm_frame(), str) else self.root.winfo_id()
+            _apply_dwm_styling(hwnd)
+        except Exception:
+            pass
 
-        # Run background worker thread
+        self.root.after(40, self._poll_queue)
+
         def _th() -> None:
             try:
                 worker()
@@ -142,4 +208,3 @@ class NullOverlay:
 
 
 Overlay = WindowsOverlay
-
