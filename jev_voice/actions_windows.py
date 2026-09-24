@@ -43,29 +43,298 @@ VK_CODES = {
 
 # ---------------------------------------------------------------- apps
 
+import json
+import shutil
+import threading
+from typing import Any
+
 ALWAYS_APPS = [
     "Chrome", "Edge", "Explorer", "Notepad", "Task Manager", "Calculator",
-    "Terminal", "PowerShell", "Settings", "Code", "Discord", "Spotify", "Slack"
+    "Terminal", "PowerShell", "Settings", "Code", "Discord", "Spotify", "Slack",
+    "LINE", "Steam", "Zoom", "Snipping Tool"
 ]
 
-@lru_cache(maxsize=1)
-def installed_apps() -> list[str]:
-    """Discover installed applications on Windows via Start Menu shortcuts and common paths."""
-    names: set[str] = set(ALWAYS_APPS)
-    start_dirs = [
-        Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs",
-        Path(os.environ.get("PROGRAMDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs",
-    ]
-    for d in start_dirs:
-        if not d.exists():
-            continue
-        for p in d.rglob("*.lnk"):
-            # Exclude uninstalls, helpers
-            stem = p.stem.strip()
-            if not any(k in stem.lower() for k in ("uninstall", "help", "readme", "documentation")):
-                names.add(stem)
+COMMON_PROTOCOLS: dict[str, str] = {
+    "line": "line:",
+    "spotify": "spotify:",
+    "discord": "discord:",
+    "slack": "slack:",
+    "notion": "notion:",
+    "steam": "steam:",
+    "calculator": "calc:",
+    "settings": "ms-settings:",
+    "camera": "microsoft.windows.camera:",
+    "clock": "ms-clock:",
+}
 
-    return sorted(names, key=str.lower)
+COMMON_ALIASES: dict[str, str] = {
+    # Japanese aliases
+    "ライン": "line",
+    "クローム": "chrome",
+    "グーグルクローム": "chrome",
+    "エッジ": "edge",
+    "マイクロソフトエッジ": "edge",
+    "ディスコード": "discord",
+    "スラック": "slack",
+    "スポティファイ": "spotify",
+    "ノーション": "notion",
+    "スチーム": "steam",
+    "電卓": "calculator",
+    "計算機": "calculator",
+    "メモ帳": "notepad",
+    "設定": "settings",
+    "エクスプローラー": "explorer",
+    "ファイルエクスプローラー": "explorer",
+    "ターミナル": "terminal",
+    "コマンドプロンプト": "cmd",
+    "パワーシェル": "powershell",
+    "タスクマネージャー": "task manager",
+    "タスクマネージャ": "task manager",
+    # English / Abbreviations
+    "calc": "calculator",
+    "wt": "terminal",
+    "code": "code",
+    "vscode": "code",
+    "visual studio code": "code",
+    "google chrome": "chrome",
+    "microsoft edge": "edge",
+    "taskmgr": "task manager",
+}
+
+COMMON_EXES: dict[str, str] = {
+    "chrome": "chrome",
+    "edge": "msedge",
+    "calculator": "calc",
+    "terminal": "wt",
+    "powershell": "powershell",
+    "cmd": "cmd",
+    "notepad": "notepad",
+    "explorer": "explorer",
+    "settings": "ms-settings:",
+    "task manager": "taskmgr",
+    "code": "code",
+}
+
+
+class AppRegistry:
+    """Registry of installed Windows applications combining Start Menu shortcuts (.lnk),
+    UWP/Store apps (Get-StartApps AppID), protocol handlers, and standard executables."""
+
+    _instance: AppRegistry | None = None
+    _lock = threading.Lock()
+
+    def __init__(self) -> None:
+        self._apps: dict[str, dict[str, Any]] = {}
+        self._cache_dir = Path.home() / ".cache" / "jev-voice"
+        self._cache_file = self._cache_dir / "windows_apps.json"
+        self._init_registry()
+
+    @classmethod
+    def get(cls) -> AppRegistry:
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = AppRegistry()
+        return cls._instance
+
+    def _init_registry(self) -> None:
+        # 1. Fast LNK scan (~10ms)
+        self._scan_lnks()
+
+        # 2. Disk cache load (~1ms)
+        cache_loaded = self._load_cache()
+
+        # 3. If cache missing or stale (>3 days), refresh in background
+        if not cache_loaded:
+            threading.Thread(target=self._refresh_start_apps, daemon=True).start()
+
+    def _scan_lnks(self) -> None:
+        start_dirs = [
+            Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs",
+            Path(os.environ.get("PROGRAMDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs",
+        ]
+        exclude_keywords = (
+            "uninstall", "アンインストール", "help", "ヘルプ", "readme",
+            "documentation", "マニュアル", "manual", "website", "web site", "url"
+        )
+        for d in start_dirs:
+            if not d.exists():
+                continue
+            try:
+                for p in d.rglob("*.lnk"):
+                    stem = p.stem.strip()
+                    lower_stem = stem.lower()
+                    if any(k in lower_stem for k in exclude_keywords):
+                        continue
+                    entry = self._apps.setdefault(lower_stem, {"display_name": stem})
+                    if "lnk" not in entry or not entry["lnk"]:
+                        entry["lnk"] = str(p)
+            except Exception:
+                pass
+
+    def _load_cache(self) -> bool:
+        if not self._cache_file.exists():
+            return False
+        try:
+            mtime = self._cache_file.stat().st_mtime
+            if time.time() - mtime > 86400 * 3:
+                return False
+            data = json.loads(self._cache_file.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                for item in data:
+                    name = item.get("Name", "").strip()
+                    appid = item.get("AppID", "").strip()
+                    if name and appid:
+                        lower_name = name.lower()
+                        entry = self._apps.setdefault(lower_name, {"display_name": name})
+                        entry["appid"] = appid
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _refresh_start_apps(self) -> None:
+        try:
+            cmd = ["powershell", "-NoProfile", "-Command", "Get-StartApps | ConvertTo-Json -Compress"]
+            res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=10)
+            if res.returncode == 0 and res.stdout.strip():
+                data = json.loads(res.stdout)
+                if isinstance(data, list):
+                    for item in data:
+                        name = item.get("Name", "").strip()
+                        appid = item.get("AppID", "").strip()
+                        if name and appid:
+                            lower_name = name.lower()
+                            entry = self._apps.setdefault(lower_name, {"display_name": name})
+                            entry["appid"] = appid
+                    # Save to cache
+                    try:
+                        self._cache_dir.mkdir(parents=True, exist_ok=True)
+                        self._cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+    def list_display_names(self) -> list[str]:
+        names: set[str] = set(ALWAYS_APPS)
+        for entry in self._apps.values():
+            disp = entry.get("display_name", "")
+            if disp:
+                names.add(disp)
+        return sorted(names, key=str.lower)
+
+    def resolve_app(self, query: str) -> dict[str, Any] | None:
+        q = query.strip().lower()
+        resolved_key = COMMON_ALIASES.get(q, q)
+
+        # 1. Exact match in registry
+        if resolved_key in self._apps:
+            return self._apps[resolved_key]
+        if q in self._apps:
+            return self._apps[q]
+
+        # 2. Word / prefix / substring match
+        candidates = []
+        for k, v in self._apps.items():
+            if resolved_key == k:
+                return v
+            if resolved_key in k.split():
+                candidates.append((1, v))
+            elif k.startswith(resolved_key):
+                candidates.append((2, v))
+            elif resolved_key in k:
+                candidates.append((3, v))
+
+        if candidates:
+            candidates.sort(key=lambda x: x[0])
+            return candidates[0][1]
+
+        # 3. Fallback object if protocol or known exe exists
+        proto = COMMON_PROTOCOLS.get(resolved_key) or COMMON_PROTOCOLS.get(q)
+        exe = COMMON_EXES.get(resolved_key) or COMMON_EXES.get(q)
+        if proto or exe:
+            return {"display_name": query, "protocol": proto, "exe": exe}
+
+        return None
+
+
+def installed_apps() -> list[str]:
+    """Discover installed applications on Windows via Start Menu shortcuts and StartApps registry."""
+    return AppRegistry.get().list_display_names()
+
+
+def launch_app(name: str) -> bool:
+    """Launch application safely on Windows without popping up 'file not found' dialogs."""
+    reg = AppRegistry.get()
+    app = reg.resolve_app(name)
+
+    if app:
+        # 1. Try .lnk shortcut
+        lnk = app.get("lnk")
+        if lnk and os.path.exists(lnk):
+            try:
+                os.startfile(lnk)
+                return True
+            except Exception:
+                pass
+
+        # 2. Try AppID (shell:AppsFolder\<AppID>)
+        appid = app.get("appid")
+        if appid:
+            try:
+                os.startfile(f"shell:AppsFolder\\{appid}")
+                return True
+            except Exception:
+                pass
+
+        # 3. Try protocol handler (e.g. line:, spotify:)
+        proto = app.get("protocol") or COMMON_PROTOCOLS.get(name.lower())
+        if proto:
+            try:
+                os.startfile(proto)
+                return True
+            except Exception:
+                pass
+
+        # 4. Try exe path or common command
+        exe = app.get("exe") or COMMON_EXES.get(name.lower())
+        if exe:
+            try:
+                os.startfile(exe)
+                return True
+            except Exception:
+                try:
+                    subprocess.Popen([exe], shell=False)
+                    return True
+                except Exception:
+                    pass
+
+    # Check if name is in PATH
+    which_path = shutil.which(name)
+    if which_path:
+        try:
+            os.startfile(which_path)
+            return True
+        except Exception:
+            try:
+                subprocess.Popen([which_path], shell=False)
+                return True
+            except Exception:
+                pass
+
+    # Check protocol aliases
+    norm = COMMON_ALIASES.get(name.lower(), name.lower())
+    if norm in COMMON_PROTOCOLS:
+        try:
+            os.startfile(COMMON_PROTOCOLS[norm])
+            return True
+        except Exception:
+            pass
+
+    # Suppress cmd /c start "" to prevent Windows "File not found" dialogs
+    print(f"⚠️ アプリが見つかりませんでした: '{name}'")
+    return False
 
 
 def frontmost_pid() -> int:
@@ -98,36 +367,12 @@ def frontmost_app() -> str:
     return ""
 
 
-def launch_app(name: str) -> None:
-    """Launch application by name on Windows."""
-    # Check known aliases
-    aliases = {
-        "chrome": "chrome",
-        "edge": "msedge",
-        "calculator": "calc",
-        "terminal": "wt",
-        "powershell": "powershell",
-        "notepad": "notepad",
-        "explorer": "explorer",
-        "settings": "ms-settings:",
-        "task manager": "taskmgr",
-        "code": "code",
-    }
-    target = aliases.get(name.lower(), name)
-    try:
-        os.startfile(target)
-    except Exception:
-        # Fallback to search in start menu
-        subprocess.Popen(["cmd", "/c", "start", "", target], shell=True)
-
-
 def open_app(name: str) -> None:
     launch_app(name)
 
 
 def focus_app(name: str, timeout: float = 2.0) -> bool:
-    launch_app(name)
-    return True
+    return launch_app(name)
 
 
 def open_url(url: str) -> None:
