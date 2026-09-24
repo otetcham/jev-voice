@@ -1,192 +1,112 @@
 """Windows Native High-DPI Floating Voice Pill & Antigravity Round Box Overlay.
-Rendered directly via Edge WebView2 (Chromium) with full Per-Pixel Alpha Translucency.
-100% faithful to user CSS/HTML specifications:
-- Exact CSS keyframes: audio-pill-pulse (box-shadow pulse 0 0 10px to 24px)
-- Exact CSS keyframes: dot-pop (cubic-bezier(0.34, 1.56, 0.64, 1) scale 0 -> 1.18 -> 1)
-- Exact styling:
-    - .round-box (44x44px, #4f46e5, 2px solid #818cf8, white bold 12px)
-    - .pill (height 44px, padding 0 20px, #0f172a, 1px solid rgba(99, 102, 241, 0.6))
-    - #leftRoundBoxes (gap 8px)
-    - container (gap 10px)
+100% faithful reproduction of user design specification:
+- Solid Voice Pill: height 44px, padding 0 20px, border-radius 9999px, background #0f172a, border 1px solid rgba(99, 102, 241, 0.6)
+- audio-pill-pulse 2.8s: box-shadow: 0 0 10px rgba(99, 102, 241, 0.35) -> 0 0 24px rgba(99, 102, 241, 0.70)
+- Left Round Box (.round-box): 44x44px, border-radius 50%, background #4f46e5, border 2px solid #818cf8, white bold 12px
+- dot-pop animation: 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) scale 0 -> 1.18 -> 1
+- High-fidelity 2x Super-Sampling Anti-Aliasing (SSAA)
+- Beautiful Japanese font rendering (Yu Gothic UI / Meiryo)
 """
 from __future__ import annotations
 
 import ctypes
-import json
+import math
+import os
 import queue
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from typing import Callable
+
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 user32 = ctypes.windll.user32 if sys.platform == "win32" else None
 
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-* { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
-body {
-  background: transparent;
-  width: 100vw;
-  height: 100vh;
-  display: flex;
-  justify-content: flex-end;
-  align-items: flex-start;
-  padding: 16px 20px 0 0;
-  overflow: hidden;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Segoe UI Variable Text", sans-serif;
-}
-@keyframes audio-pill-pulse {
-  0%, 100% { box-shadow: 0 0 10px rgba(99, 102, 241, 0.35); }
-  50% { box-shadow: 0 0 24px rgba(99, 102, 241, 0.7); }
-}
-@keyframes dot-pop {
-  0% { transform: scale(0); opacity: 0; }
-  70% { transform: scale(1.18); opacity: 1; }
-  100% { transform: scale(1); opacity: 1; }
-}
-@keyframes dot-fadeout {
-  0% { transform: scale(1); opacity: 1; }
-  100% { transform: scale(0.6); opacity: 0; }
-}
-.round-box {
-  width: 44px; height: 44px; border-radius: 50%;
-  background: #4f46e5; border: 2px solid #818cf8; color: #ffffff;
-  display: flex; align-items: center; justify-content: center;
-  font-size: 12px; font-weight: 600;
-  animation: dot-pop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
-  flex-shrink: 0;
-}
-.round-box.removing {
-  animation: dot-fadeout 0.2s ease forwards;
-}
-.pill {
-  height: 44px; padding: 0 20px; border-radius: 9999px;
-  background: #0f172a; border: 1px solid rgba(99, 102, 241, 0.6);
-  display: flex; align-items: center; gap: 10px;
-  animation: audio-pill-pulse 2.8s ease-in-out infinite;
-  white-space: nowrap;
-  transition: opacity 0.25s ease, transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
-  flex-shrink: 0;
-}
-.pill.state-done {
-  border-color: rgba(52, 211, 153, 0.8);
-  box-shadow: 0 0 16px rgba(52, 211, 153, 0.4);
-  animation: none;
-}
-.pill.state-error {
-  border-color: rgba(248, 113, 113, 0.8);
-  box-shadow: 0 0 16px rgba(248, 113, 113, 0.4);
-  animation: none;
-}
-.pill.state-thinking {
-  animation: none;
-  box-shadow: 0 0 14px rgba(99, 102, 241, 0.45);
-}
-.pill-text {
-  color: #e2e8f0; font-size: 13px; font-weight: 500;
-}
-#overlayWrapper {
-  display: flex; align-items: center; gap: 10px;
-  transition: opacity 0.25s ease, transform 0.25s ease;
-}
-#overlayWrapper.hidden {
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(-8px) scale(0.95);
-}
-</style>
-</head>
-<body>
-<div id="overlayWrapper" class="hidden">
-  <!-- タスク追加時に丸いボックスが並ぶコンテナ -->
-  <div id="leftRoundBoxes" style="display: flex; align-items: center; gap: 8px;"></div>
+# Set Process DPI Awareness
+if user32:
+    try:
+        user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+    except Exception:
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            try:
+                user32.SetProcessDPIAware()
+            except Exception:
+                pass
 
-  <!-- 横長の角丸ボックス（単色ソリッド） -->
-  <div id="voicePill" class="pill">
-    <span class="pill-text" id="pillText">音声入力中</span>
-  </div>
-</div>
+TRANS_COLOR = "#010101"
+TRANS_RGB = (1, 1, 1)
 
-<script>
-const wrapper = document.getElementById('overlayWrapper');
-const pill = document.getElementById('voicePill');
-const pillText = document.getElementById('pillText');
-const leftBoxes = document.getElementById('leftRoundBoxes');
+# Find crisp Japanese font on Windows
+FONT_PATH = None
+candidates = [
+    r"C:\Windows\Fonts\YuGothB.ttc",
+    r"C:\Windows\Fonts\YuGothM.ttc",
+    r"C:\Windows\Fonts\meiryob.ttc",
+    r"C:\Windows\Fonts\meiryo.ttc",
+    r"C:\Windows\Fonts\msgothic.ttc",
+]
+for p in candidates:
+    if os.path.exists(p):
+        FONT_PATH = p
+        break
 
-window.updateOverlay = function(state, text) {
-  if (state === 'idle' && leftBoxes.children.length === 0) {
-    wrapper.classList.add('hidden');
-    return;
-  }
-  wrapper.classList.remove('hidden');
 
-  if (text) {
-    pillText.textContent = text;
-  } else if (state === 'listening') {
-    pillText.textContent = '音声入力中';
-  } else if (state === 'thinking') {
-    pillText.textContent = '解析中…';
-  } else if (state === 'done') {
-    pillText.textContent = '完了';
-  }
+def _cubic_bezier_pop(t: float) -> float:
+    """Approximation of cubic-bezier(0.34, 1.56, 0.64, 1) for 0 <= t <= 1."""
+    if t <= 0.0:
+        return 0.0
+    if t >= 1.0:
+        return 1.0
+    if t < 0.7:
+        progress = t / 0.7
+        return 1.18 * math.sin(progress * math.pi / 2)
+    else:
+        progress = (t - 0.7) / 0.3
+        return 1.18 - 0.18 * math.sin(progress * math.pi / 2)
 
-  pill.className = 'pill';
-  if (state === 'done') {
-    pill.classList.add('state-done');
-  } else if (state === 'error') {
-    pill.classList.add('state-error');
-  } else if (state === 'thinking') {
-    pill.classList.add('state-thinking');
-  }
-};
 
-window.addRoundBox = function(id, label) {
-  wrapper.classList.remove('hidden');
-  const existing = document.getElementById(id);
-  if (existing) return;
+def draw_capsule_solid(draw_target, x, y, width, height, fill=None, outline=None, outline_w=1):
+    r = height / 2.0
+    if fill:
+        draw_target.ellipse([x, y, x + height, y + height], fill=fill, outline=None)
+        draw_target.ellipse([x + width - height, y, x + width, y + height], fill=fill, outline=None)
+        draw_target.rectangle([x + r, y, x + width - r, y + height], fill=fill, outline=None)
+    if outline and outline_w > 0:
+        draw_target.arc([x, y, x + height, y + height], start=90, end=270, fill=outline, width=outline_w)
+        draw_target.arc([x + width - height, y, x + width, y + height], start=270, end=90, fill=outline, width=outline_w)
+        draw_target.line([x + r, y, x + width - r, y], fill=outline, width=outline_w)
+        draw_target.line([x + r, y + height, x + width - r, y + height], fill=outline, width=outline_w)
 
-  const box = document.createElement('div');
-  box.id = id;
-  box.className = 'round-box';
-  box.textContent = label || 'AGY';
-  leftBoxes.appendChild(box);
-};
 
-window.removeRoundBox = function(id) {
-  const box = document.getElementById(id);
-  if (box) {
-    box.classList.add('removing');
-    setTimeout(() => {
-      box.remove();
-      if (wrapper.classList.contains('state-idle') && leftBoxes.children.length === 0) {
-        wrapper.classList.add('hidden');
-      }
-    }, 200);
-  }
-};
-
-window.clearRoundBoxes = function() {
-  leftBoxes.innerHTML = '';
-};
-</script>
-</body>
-</html>
-"""
+@dataclass
+class AgyTask:
+    task_id: str
+    label: str
+    created_at: float
 
 
 class WindowsOverlay:
-    """Full-Fidelity WebView2 Floating Voice Pill with Antigravity Task Round Boxes."""
+    """Pixel-perfect, high-DPI Floating Voice Pill & Antigravity Round Box Overlay."""
 
     def __init__(self) -> None:
-        self.window = None
+        self.root = None
+        self.label_widget = None
+        self._current_photo = None
         self.q: queue.Queue[tuple[str, ...]] = queue.Queue()
         self._revert_timer = None
+        self.scale = 1.0
+
+        # State
+        self.state = "idle"
+        self.text = "音声入力中"
+        self.tasks: list[AgyTask] = []
         self._task_counter = 1
-        self._ready = threading.Event()
+
+        self.font_pill = None
+        self.font_round = None
 
     def set(self, state: str, text: str = "", revert_after: float | None = None) -> None:
         self.q.put(("set", state, text, revert_after))
@@ -203,97 +123,268 @@ class WindowsOverlay:
     def clear_tasks(self) -> None:
         self.q.put(("clear_tasks",))
 
-    def _eval_js(self, js: str) -> None:
-        if self.window and self._ready.is_set():
-            try:
-                self.window.evaluate_js(js)
-            except Exception:
-                pass
+    def _render_frame(self, w: int, h: int, text: str, state: str, now: float) -> Image.Image:
+        # 2x Super-Sampling Anti-Aliasing (SSAA)
+        SSAA = 2
+        W, H = w * SSAA, h * SSAA
 
-    def _pump_queue(self) -> None:
-        while True:
-            time.sleep(0.025)
-            if not self._ready.is_set() or not self.window:
-                continue
+        im = Image.new("RGB", (W, H), TRANS_RGB)
+        draw = ImageDraw.Draw(im)
 
-            try:
-                while not self.q.empty():
-                    cmd = self.q.get_nowait()
-                    action = cmd[0]
+        # Pulse phase (2.8s period)
+        pulse_phase = 0.5 - 0.5 * math.cos(((now % 2.8) / 2.8) * 2 * math.pi)
 
-                    if action == "set":
-                        _, state, text, revert_after = cmd
-                        s_esc = json.dumps(state)
-                        t_esc = json.dumps(text)
-                        self._eval_js(f"window.updateOverlay({s_esc}, {t_esc});")
+        # Truncate text if very long
+        display_text = text
+        if len(display_text) > 32:
+            display_text = display_text[:30] + "…"
 
-                        if self._revert_timer:
-                            self._revert_timer.cancel()
-                            self._revert_timer = None
+        bbox = draw.textbbox((0, 0), display_text, font=self.font_pill)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
 
-                        if revert_after:
-                            def _auto_revert():
-                                self.set("idle", "")
-                            self._revert_timer = threading.Timer(revert_after, _auto_revert)
-                            self._revert_timer.start()
+        pill_pad_x = 20 * self.scale * SSAA
+        pill_h = 44 * self.scale * SSAA
+        pill_w = max(pill_h, text_w + pill_pad_x * 2)
 
-                    elif action == "add_task":
-                        _, tid, label = cmd
-                        i_esc = json.dumps(tid)
-                        l_esc = json.dumps(label)
-                        self._eval_js(f"window.addRoundBox({i_esc}, {l_esc});")
+        num_tasks = len(self.tasks)
+        round_size = 44 * self.scale * SSAA
+        gap_rounds = 8 * self.scale * SSAA
+        gap_to_pill = 10 * self.scale * SSAA
 
-                    elif action == "remove_task":
-                        _, tid = cmd
-                        i_esc = json.dumps(tid)
-                        self._eval_js(f"window.removeRoundBox({i_esc});")
+        total_content_w = (num_tasks * round_size + max(0, num_tasks - 1) * gap_rounds + (gap_to_pill if num_tasks > 0 else 0)) + pill_w
+        pad_box = 20 * self.scale * SSAA
+        start_x = W - pad_box - total_content_w
+        start_y = pad_box
 
-                    elif action == "clear_tasks":
-                        self._eval_js("window.clearRoundBoxes();")
+        pill_x = start_x + (num_tasks * round_size + max(0, num_tasks - 1) * gap_rounds + (gap_to_pill if num_tasks > 0 else 0))
+        pill_y = start_y
 
-            except Exception:
-                pass
+        # 1. Glow / Box-Shadow Rings matching @keyframes audio-pill-pulse
+        # box-shadow: 0 0 10px rgba(99, 102, 241, 0.35) -> 0 0 24px rgba(99, 102, 241, 0.70)
+        if state == "listening":
+            glow_intensity = pulse_phase
+            glow_steps = [
+                (int((6 + 4 * glow_intensity) * self.scale * SSAA), (30, 27, 75)),
+                (int((4 + 2 * glow_intensity) * self.scale * SSAA), (49, 46, 129)),
+                (int(2 * self.scale * SSAA), (67, 56, 202)),
+            ]
+            pill_border = (99, 102, 241)
+        elif state == "done":
+            glow_steps = [
+                (int(4 * self.scale * SSAA), (6, 78, 59)),
+                (int(2 * self.scale * SSAA), (16, 185, 129)),
+            ]
+            pill_border = (52, 211, 153)
+        elif state == "error":
+            glow_steps = [
+                (int(4 * self.scale * SSAA), (127, 29, 29)),
+                (int(2 * self.scale * SSAA), (239, 68, 68)),
+            ]
+            pill_border = (248, 113, 113)
+        else: # thinking / other
+            glow_steps = [
+                (int(3 * self.scale * SSAA), (49, 46, 129)),
+                (int(1 * self.scale * SSAA), (67, 56, 202)),
+            ]
+            pill_border = (99, 102, 241)
 
-    def run(self, worker: Callable[[], None]) -> None:
-        import webview
+        for glow_offset, glow_color in glow_steps:
+            draw_capsule_solid(
+                draw,
+                pill_x - glow_offset, pill_y - glow_offset,
+                pill_w + glow_offset * 2, pill_h + glow_offset * 2,
+                fill=None,
+                outline=glow_color,
+                outline_w=int(2 * self.scale * SSAA)
+            )
 
-        sw = user32.GetSystemMetrics(0) if user32 else 1920
-        win_w = 650
-        win_h = 100
-        win_x = sw - win_w - 10
-        win_y = 6
+        # 2. Left Round Boxes (.round-box) with dot-pop animation
+        # width: 44px; height: 44px; border-radius: 50%;
+        # background: #4f46e5; border: 2px solid #818cf8; color: #ffffff;
+        curr_x = start_x
+        for t in self.tasks:
+            elapsed = now - t.created_at
+            scale_pop = _cubic_bezier_pop(elapsed / 0.3) if elapsed < 0.3 else 1.0
 
-        self.window = webview.create_window(
-            'Jev Voice Overlay',
-            html=HTML_TEMPLATE,
-            frameless=True,
-            transparent=True,
-            on_top=True,
-            width=win_w,
-            height=win_h,
-            x=win_x,
-            y=win_y,
+            cur_round_size = round_size * scale_pop
+            cx = curr_x + round_size / 2.0
+            cy = start_y + round_size / 2.0
+            rx0 = cx - cur_round_size / 2.0
+            ry0 = cy - cur_round_size / 2.0
+            rx1 = cx + cur_round_size / 2.0
+            ry1 = cy + cur_round_size / 2.0
+
+            if cur_round_size > 2:
+                # Outer subtle glow for round box
+                draw.ellipse(
+                    [rx0 - 2 * SSAA, ry0 - 2 * SSAA, rx1 + 2 * SSAA, ry1 + 2 * SSAA],
+                    fill=None,
+                    outline=(49, 46, 129),
+                    width=int(2 * SSAA)
+                )
+                # Main round box
+                draw.ellipse(
+                    [rx0, ry0, rx1, ry1],
+                    fill=(79, 70, 229), # #4f46e5
+                    outline=(129, 140, 248), # #818cf8
+                    width=int(2 * self.scale * SSAA)
+                )
+                t_bbox = draw.textbbox((0, 0), t.label, font=self.font_round)
+                tw = t_bbox[2] - t_bbox[0]
+                th = t_bbox[3] - t_bbox[1]
+                draw.text(
+                    (cx - tw / 2.0, cy - th / 2.0 - 2 * SSAA),
+                    t.label,
+                    fill=(255, 255, 255),
+                    font=self.font_round
+                )
+
+            curr_x += round_size + gap_rounds
+
+        # 3. Pill Body
+        # height: 44px; padding: 0 20px; border-radius: 9999px;
+        # background: #0f172a; border: 1px solid rgba(99, 102, 241, 0.6);
+        draw_capsule_solid(
+            draw,
+            pill_x, pill_y, pill_w, pill_h,
+            fill=(15, 23, 42), # #0f172a
+            outline=pill_border,
+            outline_w=int(1 * self.scale * SSAA)
         )
 
-        def _on_loaded():
-            self._ready.set()
-            threading.Thread(target=self._pump_queue, daemon=True, name="overlay-pump").start()
-            # Start worker thread
-            threading.Thread(target=_worker_wrapper, daemon=True, name="jev-worker").start()
+        # 4. Pill Text
+        # color: #e2e8f0; font-size: 13px; font-weight: 500;
+        tx = pill_x + (pill_w - text_w) / 2.0
+        ty = pill_y + (pill_h - text_h) / 2.0 - 2 * SSAA
+        draw.text((tx, ty), display_text, fill=(226, 232, 240), font=self.font_pill)
 
-        def _worker_wrapper():
+        # Downsample with 2x Lanczos anti-aliasing
+        final_im = im.resize((w, h), Image.Resampling.LANCZOS)
+
+        # Clean background pixels to pure (1, 1, 1) for crystal clear colorkey transparency
+        pix = final_im.load()
+        for ix in range(w):
+            for iy in range(h):
+                r, g, b = pix[ix, iy]
+                if r <= 3 and g <= 3 and b <= 3:
+                    pix[ix, iy] = TRANS_RGB
+
+        return final_im
+
+    def _poll_queue(self) -> None:
+        now = time.time()
+        try:
+            while not self.q.empty():
+                cmd = self.q.get_nowait()
+                action = cmd[0]
+                if action == "set":
+                    _, state, text, revert_after = cmd
+                    self.state = state
+                    if text:
+                        self.text = text
+                    elif state == "listening":
+                        self.text = "音声入力中"
+                    elif state == "thinking":
+                        self.text = "解析中…"
+                    elif state == "done":
+                        self.text = "完了"
+
+                    if self._revert_timer:
+                        try:
+                            self.root.after_cancel(self._revert_timer)
+                        except Exception:
+                            pass
+                        self._revert_timer = None
+
+                    if revert_after:
+                        self._revert_timer = self.root.after(int(revert_after * 1000), self._auto_hide)
+
+                elif action == "add_task":
+                    _, tid, label = cmd
+                    self.tasks.append(AgyTask(tid, label, now))
+
+                elif action == "remove_task":
+                    _, tid = cmd
+                    self.tasks = [t for t in self.tasks if t.task_id != tid]
+
+                elif action == "clear_tasks":
+                    self.tasks.clear()
+
+        except Exception:
+            pass
+
+        # Update visuals
+        if self.state == "idle" and not self.tasks:
+            self.root.withdraw()
+        else:
+            w = int(520 * self.scale)
+            h = int(95 * self.scale)
+            sw = user32.GetSystemMetrics(0) if user32 else 1920
+            x = sw - w - int(12 * self.scale)
+            y = int(12 * self.scale)
+
+            img = self._render_frame(w, h, self.text, self.state, now)
+            self._current_photo = ImageTk.PhotoImage(img)
+            self.label_widget.config(image=self._current_photo)
+
+            self.root.geometry(f"{w}x{h}+{x}+{y}")
+            self.root.deiconify()
+            self.root.attributes("-topmost", True)
+
+        if self.root:
+            self.root.after(35, self._poll_queue)
+
+    def _auto_hide(self) -> None:
+        self.state = "idle"
+        if not self.tasks and self.root:
+            self.root.withdraw()
+
+    def run(self, worker: Callable[[], None]) -> None:
+        import tkinter as tk
+
+        self.root = tk.Tk()
+        self.root.title("Jev Voice Overlay")
+        self.root.overrideredirect(True)
+        self.root.attributes("-topmost", True)
+
+        # Set transparent colorkey
+        self.root.wm_attributes("-transparentcolor", TRANS_COLOR)
+        self.root.config(bg=TRANS_COLOR)
+
+        try:
+            dpi = user32.GetDpiForSystem()
+            self.scale = max(1.0, dpi / 96.0)
+        except Exception:
+            self.scale = 1.0
+
+        # Load fonts
+        SSAA = 2
+        try:
+            self.font_pill = ImageFont.truetype(FONT_PATH, int(13 * self.scale * SSAA))
+            self.font_round = ImageFont.truetype(FONT_PATH, int(12 * self.scale * SSAA))
+        except Exception:
+            self.font_pill = ImageFont.load_default()
+            self.font_round = ImageFont.load_default()
+
+        self.label_widget = tk.Label(self.root, bg=TRANS_COLOR, bd=0)
+        self.label_widget.pack(fill="both", expand=True)
+
+        self.root.withdraw()
+        self.root.after(35, self._poll_queue)
+
+        def _th() -> None:
             try:
                 worker()
             finally:
-                if self.window:
-                    time.sleep(0.2)
-                    self.window.destroy()
+                if self.root:
+                    self.root.after(0, self.root.destroy)
 
+        threading.Thread(target=_th, daemon=True, name="jev-worker").start()
         try:
-            webview.start(_on_loaded, gui='edgechromium')
+            self.root.mainloop()
         except KeyboardInterrupt:
-            if self.window:
-                self.window.destroy()
+            pass
 
 
 class NullOverlay:
