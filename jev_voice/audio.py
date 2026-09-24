@@ -34,13 +34,23 @@ class Listener:
         self.paused_until = 0.0
         self.noise = 0.01
         self.on_speech_start = None  # optional callback fired when an utterance begins
+        self.on_audio_level = None   # optional callback(level: float) for visualizers
         self.stream = sd.InputStream(
             samplerate=config.SAMPLE_RATE, channels=1, dtype="float32", blocksize=FRAME,
             device=device, callback=self._cb,
         )
 
     def _cb(self, indata, frames, t, status) -> None:  # noqa: ANN001
-        self.q.put(indata[:, 0].copy())
+        frame = indata[:, 0].copy()
+        self.q.put(frame)
+        if self.on_audio_level:
+            try:
+                rms = float(np.sqrt(np.mean(frame * frame)))
+                # Scale RMS (voice RMS typically 0.01 to 0.25) to 0.0 ~ 1.0 range
+                level = min(1.0, rms * 5.0)
+                self.on_audio_level(level)
+            except Exception:
+                pass
 
     def start(self) -> None:
         self.stream.start()

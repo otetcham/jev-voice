@@ -149,6 +149,9 @@ class NullOverlay:
     def set(self, state: str, text: str = "", revert_after: float | None = None) -> None:
         pass
 
+    def set_audio_level(self, level: float) -> None:
+        pass
+
     def add_task(self, label: str = "AGY") -> str:
         return "noop"
 

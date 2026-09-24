@@ -379,6 +379,7 @@ class Session:
         self.brain = Brain()
         self.speaker = Speaker(enabled=not args.quiet)
         self.listener = Listener(device=args.device)
+        self.listener.on_audio_level = OVERLAY.set_audio_level
         self.listener.start()
 
     def close(self) -> None:
