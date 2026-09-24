@@ -107,6 +107,8 @@ def run_task(goal: str, speaker: Speaker | None = None, start_url: str | None = 
             OVERLAY.set("thinking", f"Jev-Neo: {goal[:25]}...")
 
             try:
+                tid = OVERLAY.add_task("NEO")
+                OVERLAY.set("thinking", "ブラウザを起動中…")
                 proc = subprocess.Popen(
                     ["node", str(neo_runner), goal, effective_url],
                     stdout=subprocess.PIPE,
@@ -119,25 +121,39 @@ def run_task(goal: str, speaker: Speaker | None = None, start_url: str | None = 
                     line_s = line.strip()
                     if line_s:
                         print(f"  [neo] {line_s}")
+                        OVERLAY.update_task_log(tid, line_s)
                         if any(k in line_s for k in ("Step", "Jev chose", "Filling", "Clicking", "Goal reached", "Opening")):
-                            OVERLAY.set("thinking", line_s[:40])
+                            OVERLAY.set("thinking", line_s[:28])
                 proc.wait()
                 if proc.returncode == 0:
+                    OVERLAY.complete_task(tid, "done")
                     OVERLAY.set("done", "ブラウザ操作が完了しました", revert_after=5.0)
                     return "ブラウザ操作が完了しました。"
+                OVERLAY.complete_task(tid, "error")
                 print("  ! Jev-Neo runner exited with error, falling back to Antigravity CLI...")
             except Exception as ex:
+                if 'tid' in locals():
+                    OVERLAY.complete_task(tid, "error")
                 print(f"  ! Jev-Neo launch error: {ex}, falling back to Antigravity CLI...")
 
         # Fallback to Antigravity CLI
         print("  ▶ [Windows Fallback] Dispatching task to Antigravity CLI...")
-        tid = OVERLAY.add_task("AGY")
-        OVERLAY.set("thinking", "Antigravity CLIで実行中...")
+        tid_agy = OVERLAY.add_task("AGY")
+        OVERLAY.set("thinking", "実行中…")
         from .antigravity_runner import run_antigravity
+
+        def on_neo_agy_output(line: str):
+            OVERLAY.update_task_log(tid_agy, line)
+            OVERLAY.set("thinking", line[:28])
+
         try:
-            run_antigravity(f"ブラウザで次の操作を実行してください: {goal} (URL: {start_url or '適切に選択'})")
-        finally:
-            OVERLAY.remove_task(tid)
+            run_antigravity(
+                f"ブラウザで次の操作を実行してください: {goal} (URL: {start_url or '適切に選択'})",
+                on_output=on_neo_agy_output,
+            )
+            OVERLAY.complete_task(tid_agy, "done")
+        except Exception:
+            OVERLAY.complete_task(tid_agy, "error")
         OVERLAY.set("done", "完了しました", revert_after=5.0)
         return "完了しました。"
 
@@ -283,11 +299,12 @@ def handle(brain: Brain, speaker: Speaker, utterance: str, dry: bool, depth: int
     if failed and not dry and config.FALLBACK_TO_ANTIGRAVITY and is_agy_available() and plan.action != "none":
         print(f"  ⚡ Jev単体で実行できなかったため、Antigravity CLI へ引き継ぎます: {utterance}")
         tid = OVERLAY.add_task("AGY")
-        OVERLAY.set("thinking", f"Antigravity: {utterance[:22]}…")
+        OVERLAY.set("thinking", f"{utterance[:24]}…")
         ding(SOUND_START)
 
         def update_overlay(text_line: str):
-            OVERLAY.set("thinking", f"{text_line[:26]}")
+            OVERLAY.update_task_log(tid, text_line)
+            OVERLAY.set("thinking", f"{text_line[:28]}")
 
         try:
             agy_reply = run_antigravity(
@@ -296,8 +313,10 @@ def handle(brain: Brain, speaker: Speaker, utterance: str, dry: bool, depth: int
                 on_output=update_overlay,
                 timeout=config.ANTIGRAVITY_TIMEOUT,
             )
-        finally:
-            OVERLAY.remove_task(tid)
+            OVERLAY.complete_task(tid, "done")
+        except Exception:
+            OVERLAY.complete_task(tid, "error")
+            agy_reply = "Antigravity の実行中にエラーが発生しました。"
 
         print(f"  ◀ [Antigravity] {agy_reply}")
         OVERLAY.set("done", "完了しました", revert_after=4.0)

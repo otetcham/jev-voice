@@ -19,8 +19,8 @@ import queue
 import sys
 import threading
 import time
-from dataclasses import dataclass
-from typing import Callable
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -175,8 +175,130 @@ def draw_capsule(draw_target, x, y, width, height, fill=None, outline=None, outl
 @dataclass
 class AgyTask:
     task_id: str
-    label: str
-    created_at: float
+    label: str = "AGY"
+    status: str = "running"  # "running", "done", "error"
+    created_at: float = 0.0
+    finished_at: float | None = None
+    log_lines: list[str] = field(default_factory=list)
+    rect: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)  # Screen coords
+
+
+class ConsolePopup:
+    """Floating terminal-like console popup displaying real-time task logs on mouse hover."""
+
+    def __init__(self, root: Any, scale: float = 1.0) -> None:
+        import tkinter as tk
+
+        self.root = root
+        self.scale = scale
+        self.top = tk.Toplevel(root)
+        self.top.overrideredirect(True)
+        self.top.attributes("-topmost", True)
+        self.top.configure(bg="#090d16", padx=10, pady=8)
+
+        # Highlight border
+        self.top.configure(highlightbackground="#6366f1", highlightcolor="#6366f1", highlightthickness=1)
+
+        # Header Frame
+        hdr = tk.Frame(self.top, bg="#090d16")
+        hdr.pack(fill="x", pady=(0, 6))
+
+        self.lbl_title = tk.Label(
+            hdr,
+            text="⚡ Antigravity CLI · [AGY]",
+            font=("Segoe UI", int(9.5 * scale), "bold"),
+            fg="#c7d2fe",
+            bg="#090d16",
+        )
+        self.lbl_title.pack(side="left")
+
+        self.lbl_status = tk.Label(
+            hdr,
+            text="RUNNING ⏳",
+            font=("Segoe UI", int(8.5 * scale), "bold"),
+            fg="#38bdf8",
+            bg="#090d16",
+        )
+        self.lbl_status.pack(side="right")
+
+        # Text Console Log Area
+        font_family = "Cascadia Code" if os.path.exists(r"C:\Windows\Fonts\cascadia.ttf") else "Consolas"
+        self.txt = tk.Text(
+            self.top,
+            height=7,
+            width=50,
+            bg="#040711",
+            fg="#94a3b8",
+            font=(font_family, int(9 * scale)),
+            bd=0,
+            padx=8,
+            pady=6,
+            wrap="word",
+        )
+        self.txt.pack(fill="both", expand=True)
+        self.txt.configure(state="disabled")
+
+        self.visible = False
+        self.current_task_id = None
+        self.top.withdraw()
+
+    def show_task(self, task: AgyTask, anchor_cx: float, anchor_cy: float, main_x: int, main_y: int, main_h: int) -> None:
+        self.current_task_id = task.task_id
+
+        # Title & Status styling
+        self.lbl_title.config(text=f"⚡ Task · [{task.label}] #{task.task_id}")
+        if task.status == "running":
+            self.lbl_status.config(text="RUNNING ⏳", fg="#38bdf8")
+        elif task.status == "done":
+            self.lbl_status.config(text="COMPLETED ✓", fg="#34d399")
+        elif task.status == "error":
+            self.lbl_status.config(text="FAILED ✗", fg="#f87171")
+
+        # Update log content
+        self.txt.configure(state="normal")
+        self.txt.delete("1.0", "end")
+        if task.log_lines:
+            content = "\n".join(task.log_lines[-10:]) + "\n"
+        else:
+            content = f"Initializing task [{task.label}]...\nAwaiting console output...\n"
+        self.txt.insert("end", content)
+        self.txt.see("end")
+        self.txt.configure(state="disabled")
+
+        pop_w = int(430 * self.scale)
+        pop_h = int(175 * self.scale)
+
+        sw = user32.GetSystemMetrics(0) if user32 else 1920
+        sh = user32.GetSystemMetrics(1) if user32 else 1080
+
+        px = int(anchor_cx - pop_w / 2.0)
+        px = max(10, min(px, sw - pop_w - 10))
+
+        if main_y + main_h + pop_h + 20 < sh:
+            py = int(main_y + main_h + 6)
+        else:
+            py = int(main_y - pop_h - 6)
+
+        self.top.geometry(f"{pop_w}x{pop_h}+{px}+{py}")
+        if not self.visible:
+            self.top.deiconify()
+            self.top.attributes("-topmost", True)
+            self.visible = True
+
+    def update_task_log(self, task: AgyTask) -> None:
+        if self.visible and self.current_task_id == task.task_id:
+            self.txt.configure(state="normal")
+            self.txt.delete("1.0", "end")
+            content = "\n".join(task.log_lines[-10:]) + "\n"
+            self.txt.insert("end", content)
+            self.txt.see("end")
+            self.txt.configure(state="disabled")
+
+    def hide(self) -> None:
+        if self.visible:
+            self.top.withdraw()
+            self.visible = False
+            self.current_task_id = None
 
 
 class WindowsOverlay:
@@ -185,7 +307,8 @@ class WindowsOverlay:
     def __init__(self) -> None:
         self.root = None
         self.hwnd = None
-        self.q: queue.Queue[tuple[str, ...]] = queue.Queue()
+        self.console_popup: ConsolePopup | None = None
+        self.q: queue.Queue[tuple[Any, ...]] = queue.Queue()
         self._revert_timer = None
         self.scale = 1.0
 
@@ -195,14 +318,15 @@ class WindowsOverlay:
         self.tasks: list[AgyTask] = []
         self._task_counter = 1
 
-        # Audio volume visualization
+        # Audio volume visualization & dynamic bar expansion
         self.target_audio_level = 0.0
         self.smoothed_audio_level = 0.0
+        self.bar_expansion = 0.0
 
         # Positioning & Dragging
         self.win_x = None
         self.win_y = None
-        self.win_w = 520
+        self.win_w = 540
         self.win_h = 110
         self._drag_start_x = 0
         self._drag_start_y = 0
@@ -212,17 +336,28 @@ class WindowsOverlay:
         self.font_round = None
 
     def set(self, state: str, text: str = "", revert_after: float | None = None) -> None:
-        self.q.put(("set", state, text, revert_after))
+        clean_text = text
+        for pfx in ("Antigravity:", "Antigravity CLI:", "Antigravity CLIで", "Antigravity"):
+            if clean_text.startswith(pfx):
+                clean_text = clean_text[len(pfx):].lstrip(" :で")
+                break
+        self.q.put(("set", state, clean_text, revert_after))
 
     def set_audio_level(self, level: float) -> None:
         """Set current microphone volume level (RMS ~ 0.0 to 1.0)."""
         self.target_audio_level = max(0.0, min(1.0, float(level)))
 
-    def add_task(self, label: str = "AGY") -> str:
+    def add_task(self, label: str = "AGY", status: str = "running") -> str:
         tid = f"task_{self._task_counter}"
         self._task_counter += 1
-        self.q.put(("add_task", tid, label))
+        self.q.put(("add_task", tid, label, status))
         return tid
+
+    def update_task_log(self, task_id: str, line: str) -> None:
+        self.q.put(("update_task_log", task_id, line))
+
+    def complete_task(self, task_id: str, status: str = "done") -> None:
+        self.q.put(("complete_task", task_id, status))
 
     def remove_task(self, task_id: str) -> None:
         self.q.put(("remove_task", task_id))
@@ -245,19 +380,25 @@ class WindowsOverlay:
 
         # Truncate text if needed
         display_text = text
-        if len(display_text) > 28:
-            display_text = display_text[:26] + "…"
+        if len(display_text) > 30:
+            display_text = display_text[:28] + "…"
 
         draw = ImageDraw.Draw(im)
         bbox = draw.textbbox((0, 0), display_text, font=self.font_pill)
         text_w = bbox[2] - bbox[0]
         text_h = bbox[3] - bbox[1]
 
-        # Equalizer volume meter: 4 vertical bars
-        bar_w = 3 * self.scale * SCALE
-        bar_gap = 3 * self.scale * SCALE
-        num_bars = 4
-        meter_w = num_bars * bar_w + (num_bars - 1) * bar_gap
+        # Voice Activity Detection (VAD) & Dynamic Waveform Expansion
+        VAD_THRESHOLD = 0.015
+        is_speaking = (state == "listening" and self.smoothed_audio_level > VAD_THRESHOLD)
+        target_expansion = 1.0 if is_speaking else 0.0
+        self.bar_expansion += (target_expansion - self.bar_expansion) * 0.25
+
+        # 5 Dynamic / Stationary Equalizer Bars (Always Visible)
+        num_bars = 5
+        cur_bar_w = (3.0 + 1.2 * self.bar_expansion) * self.scale * SCALE
+        cur_bar_gap = (2.5 + 2.0 * self.bar_expansion) * self.scale * SCALE
+        meter_w = num_bars * cur_bar_w + (num_bars - 1) * cur_bar_gap
         meter_gap = 10 * self.scale * SCALE
 
         pill_pad_x = 20 * self.scale * SCALE
@@ -278,8 +419,6 @@ class WindowsOverlay:
         pill_y = start_y
 
         # 1. Genuine Ambient Soft Gaussian Aura (box-shadow)
-        # 0%, 100%: box-shadow: 0 0 10px rgba(99, 102, 241, 0.35)
-        # 50%: box-shadow: 0 0 24px rgba(99, 102, 241, 0.70)
         if state == "listening":
             aura_blur = (10 + 14 * pulse_phase) * self.scale * SCALE
             aura_alpha = int(255 * (0.35 + 0.35 * pulse_phase))
@@ -293,7 +432,7 @@ class WindowsOverlay:
             aura_blur = 18 * self.scale * SCALE
             aura_color = (248, 113, 113, int(255 * 0.65))
             pill_border = (248, 113, 113, 200)
-        else: # thinking / other
+        else:  # thinking / other
             aura_blur = 14 * self.scale * SCALE
             aura_color = (99, 102, 241, int(255 * 0.45))
             pill_border = (99, 102, 241, 153)
@@ -306,7 +445,7 @@ class WindowsOverlay:
 
         draw = ImageDraw.Draw(im)
 
-        # 2. Left Round Boxes (.round-box) with dot-pop animation
+        # 2. Left Round Boxes (.round-box) with Status Dynamics & Hover Detection
         curr_x = start_x
         for t in self.tasks:
             elapsed = now - t.created_at
@@ -320,23 +459,69 @@ class WindowsOverlay:
             rx1 = cx + cur_round_size / 2.0
             ry1 = cy + cur_round_size / 2.0
 
+            # Store hit-test rect in screen coordinates for hover popup
+            if self.win_x is not None and self.win_y is not None:
+                screen_rx0 = self.win_x + (rx0 / SCALE)
+                screen_ry0 = self.win_y + (ry0 / SCALE)
+                screen_rx1 = self.win_x + (rx1 / SCALE)
+                screen_ry1 = self.win_y + (ry1 / SCALE)
+                t.rect = (screen_rx0, screen_ry0, screen_rx1, screen_ry1)
+
             if cur_round_size > 2:
-                # Main round box: #4f46e5 background, 2px solid #818cf8 border
-                draw.ellipse(
-                    [rx0, ry0, rx1, ry1],
-                    fill=(79, 70, 229, 255),
-                    outline=(129, 140, 248, 255),
-                    width=int(2 * self.scale * SCALE)
-                )
-                t_bbox = draw.textbbox((0, 0), t.label, font=self.font_round)
-                tw = t_bbox[2] - t_bbox[0]
-                th = t_bbox[3] - t_bbox[1]
-                draw.text(
-                    (cx - tw / 2.0, cy - th / 2.0 - 2 * SCALE),
-                    t.label,
-                    fill=(255, 255, 255, 255),
-                    font=self.font_round
-                )
+                if t.status == "done":
+                    # Status Done: Emerald Green + Vector Checkmark (✓)
+                    draw.ellipse(
+                        [rx0, ry0, rx1, ry1],
+                        fill=(16, 185, 129, 255),    # #10b981
+                        outline=(52, 211, 153, 255), # #34d399
+                        width=int(2 * self.scale * SCALE),
+                    )
+                    chk_size = cur_round_size * 0.38
+                    p1 = (cx - chk_size * 0.45, cy + chk_size * 0.05)
+                    p2 = (cx - chk_size * 0.10, cy + chk_size * 0.42)
+                    p3 = (cx + chk_size * 0.52, cy - chk_size * 0.40)
+                    draw.line([p1, p2, p3], fill=(255, 255, 255, 255), width=int(2.8 * self.scale * SCALE), joint="curve")
+
+                elif t.status == "error":
+                    # Status Error: Rose Red + Cross (✗)
+                    draw.ellipse(
+                        [rx0, ry0, rx1, ry1],
+                        fill=(239, 68, 68, 255),
+                        outline=(248, 113, 113, 255),
+                        width=int(2 * self.scale * SCALE),
+                    )
+                    crs_size = cur_round_size * 0.28
+                    draw.line([(cx - crs_size, cy - crs_size), (cx + crs_size, cy + crs_size)], fill=(255, 255, 255, 255), width=int(2.5 * self.scale * SCALE))
+                    draw.line([(cx + crs_size, cy - crs_size), (cx - crs_size, cy + crs_size)], fill=(255, 255, 255, 255), width=int(2.5 * self.scale * SCALE))
+
+                else:
+                    # Status Running: Indigo background + rotating spinner ring!
+                    draw.ellipse(
+                        [rx0, ry0, rx1, ry1],
+                        fill=(79, 70, 229, 255),      # #4f46e5
+                        outline=(129, 140, 248, 180), # #818cf8
+                        width=int(2 * self.scale * SCALE),
+                    )
+                    # Rotating Loading Spinner Arc
+                    spin_angle = (now * 360 * 1.1) % 360
+                    spin_len = 110
+                    draw.arc(
+                        [rx0 - 2 * SCALE, ry0 - 2 * SCALE, rx1 + 2 * SCALE, ry1 + 2 * SCALE],
+                        start=spin_angle,
+                        end=spin_angle + spin_len,
+                        fill=(255, 255, 255, 240),
+                        width=int(2.8 * self.scale * SCALE),
+                    )
+                    # Center Label ("AGY")
+                    t_bbox = draw.textbbox((0, 0), t.label, font=self.font_round)
+                    tw = t_bbox[2] - t_bbox[0]
+                    th = t_bbox[3] - t_bbox[1]
+                    draw.text(
+                        (cx - tw / 2.0, cy - th / 2.0 - 2 * SCALE),
+                        t.label,
+                        fill=(255, 255, 255, 255),
+                        font=self.font_round,
+                    )
 
             curr_x += round_size + gap_rounds
 
@@ -346,32 +531,40 @@ class WindowsOverlay:
             pill_x, pill_y, pill_w, pill_h,
             fill=(15, 23, 42, 255),
             outline=pill_border,
-            outline_w=int(1 * self.scale * SCALE)
+            outline_w=int(1 * self.scale * SCALE),
         )
 
-        # 4. Animated Audio Equalizer Volume Bars
+        # 4. Animated Audio Equalizer Volume Bars (Always Visible, Active ONLY while speaking)
         bar_x = pill_x + pill_pad_x
-        max_bar_h = 22 * self.scale * SCALE
-        min_bar_h = 5 * self.scale * SCALE
-
-        # 4 dynamic bars reacting to microphone level + simulated frequency flutter
-        mod_phase = (now * 9.0)
+        base_heights = [5, 8, 12, 8, 5]
+        mod_phase = (now * 11.0)
         flutter = [
-            0.55 + 0.15 * math.sin(mod_phase),
-            0.95 + 0.15 * math.sin(mod_phase + 1.2),
-            0.80 + 0.20 * math.sin(mod_phase + 2.5),
-            0.50 + 0.15 * math.sin(mod_phase + 3.8),
+            0.55 + 0.20 * math.sin(mod_phase),
+            0.90 + 0.20 * math.sin(mod_phase + 1.3),
+            1.00 + 0.20 * math.sin(mod_phase + 2.6),
+            0.85 + 0.20 * math.sin(mod_phase + 3.9),
+            0.50 + 0.20 * math.sin(mod_phase + 5.2),
         ]
 
-        active_level = self.smoothed_audio_level if state == "listening" else 0.05
-        for i, factor in enumerate(flutter):
-            bh = min_bar_h + (max_bar_h - min_bar_h) * min(1.0, max(0.0, active_level * factor * 1.5))
-            bx = bar_x + i * (bar_w + bar_gap)
+        max_bar_h = 24 * self.scale * SCALE
+        min_bar_h = 4 * self.scale * SCALE
+
+        for i in range(num_bars):
+            if is_speaking:
+                active_h = min_bar_h + (max_bar_h - min_bar_h) * min(1.0, max(0.0, self.smoothed_audio_level * flutter[i] * 2.2))
+                bh = max(min_bar_h, active_h * self.bar_expansion + base_heights[i] * (1.0 - self.bar_expansion) * self.scale * SCALE)
+                bar_color = (165, 180, 252, 255)
+            else:
+                # Stationary waveform at rest
+                bh = base_heights[i] * self.scale * SCALE
+                bar_color = (129, 140, 248, 180)
+
+            bx = bar_x + i * (cur_bar_w + cur_bar_gap)
             by = pill_y + (pill_h - bh) / 2.0
             draw.rounded_rectangle(
-                [bx, by, bx + bar_w, by + bh],
-                radius=bar_w / 2.0,
-                fill=(129, 140, 248, 255) # bright indigo/cyan glow
+                [bx, by, bx + cur_bar_w, by + bh],
+                radius=cur_bar_w / 2.0,
+                fill=bar_color,
             )
 
         # 5. Pill Text
@@ -398,7 +591,7 @@ class WindowsOverlay:
         pr = ((r * a) // 255).astype(np.uint8)
         pg = ((g * a) // 255).astype(np.uint8)
         pb = ((b * a) // 255).astype(np.uint8)
-        pa = arr[:, :, 3] # uint8
+        pa = arr[:, :, 3]  # uint8
         bgra = np.dstack([pb, pg, pr, pa]).tobytes()
 
         hdc_screen = user32.GetDC(0)
@@ -407,7 +600,7 @@ class WindowsOverlay:
         bmi = BITMAPINFOHEADER()
         bmi.biSize = ctypes.sizeof(BITMAPINFOHEADER)
         bmi.biWidth = w
-        bmi.biHeight = -h # top-down
+        bmi.biHeight = -h  # top-down
         bmi.biPlanes = 1
         bmi.biBitCount = 32
         bmi.biCompression = 0
@@ -467,23 +660,74 @@ class WindowsOverlay:
                         self._revert_timer = self.root.after(int(revert_after * 1000), self._auto_hide)
 
                 elif action == "add_task":
-                    _, tid, label = cmd
-                    self.tasks.append(AgyTask(tid, label, now))
+                    _, tid, label, status = cmd
+                    self.tasks.append(AgyTask(task_id=tid, label=label, status=status, created_at=now))
+
+                elif action == "update_task_log":
+                    _, tid, line = cmd
+                    for t in self.tasks:
+                        if t.task_id == tid:
+                            t.log_lines.append(line)
+                            if len(t.log_lines) > 30:
+                                t.log_lines = t.log_lines[-30:]
+                            if self.console_popup:
+                                self.console_popup.update_task_log(t)
+                            break
+
+                elif action == "complete_task":
+                    _, tid, status = cmd
+                    for t in self.tasks:
+                        if t.task_id == tid:
+                            t.status = status
+                            t.finished_at = now
+                            if self.console_popup:
+                                self.console_popup.update_task_log(t)
+                            break
 
                 elif action == "remove_task":
                     _, tid = cmd
                     self.tasks = [t for t in self.tasks if t.task_id != tid]
+                    if self.console_popup and self.console_popup.current_task_id == tid:
+                        self.console_popup.hide()
 
                 elif action == "clear_tasks":
                     self.tasks.clear()
+                    if self.console_popup:
+                        self.console_popup.hide()
 
         except Exception:
             pass
+
+        # Auto-remove completed tasks after 6 seconds so user can see completion checkmark
+        self.tasks = [
+            t for t in self.tasks
+            if not (t.finished_at and (now - t.finished_at > 6.0))
+        ]
+
+        # Check mouse hover on task round boxes via GetCursorPos
+        pt = POINT()
+        if user32 and user32.GetCursorPos(ctypes.byref(pt)):
+            mx, my = pt.x, pt.y
+            hovered = None
+            for t in self.tasks:
+                x0, y0, x1, y1 = t.rect
+                if x0 <= mx <= x1 and y0 <= my <= y1:
+                    hovered = t
+                    break
+
+            if hovered and self.console_popup:
+                cx = (hovered.rect[0] + hovered.rect[2]) / 2.0
+                cy = (hovered.rect[1] + hovered.rect[3]) / 2.0
+                self.console_popup.show_task(hovered, cx, cy, self.win_x, self.win_y, self.win_h)
+            elif self.console_popup:
+                self.console_popup.hide()
 
         # Update visuals
         if self.state == "idle" and not self.tasks:
             if self.root.winfo_viewable():
                 self.root.withdraw()
+            if self.console_popup:
+                self.console_popup.hide()
         else:
             if not self.root.winfo_viewable():
                 self.root.deiconify()
@@ -500,6 +744,8 @@ class WindowsOverlay:
         self.state = "idle"
         if not self.tasks and self.root:
             self.root.withdraw()
+        if self.console_popup:
+            self.console_popup.hide()
 
     # Drag and Drop handlers
     def _on_mouse_down(self, event) -> None:
@@ -530,7 +776,7 @@ class WindowsOverlay:
         except Exception:
             self.scale = 1.0
 
-        self.win_w = int(520 * self.scale)
+        self.win_w = int(540 * self.scale)
         self.win_h = int(110 * self.scale)
 
         sw = user32.GetSystemMetrics(0) if user32 else 1920
@@ -553,6 +799,9 @@ class WindowsOverlay:
         self.root.bind("<Button-1>", self._on_mouse_down)
         self.root.bind("<B1-Motion>", self._on_mouse_drag)
         self.root.bind("<ButtonRelease-1>", self._on_mouse_up)
+
+        # Initialize ConsolePopup
+        self.console_popup = ConsolePopup(self.root, self.scale)
 
         # Load typography
         SCALE = 2
@@ -587,8 +836,14 @@ class NullOverlay:
     def set_audio_level(self, level: float) -> None:
         pass
 
-    def add_task(self, label: str = "AGY") -> str:
+    def add_task(self, label: str = "AGY", status: str = "running") -> str:
         return "noop"
+
+    def update_task_log(self, task_id: str, line: str) -> None:
+        pass
+
+    def complete_task(self, task_id: str, status: str = "done") -> None:
+        pass
 
     def remove_task(self, task_id: str) -> None:
         pass
